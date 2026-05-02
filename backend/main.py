@@ -177,6 +177,7 @@ Rules:
         ]}],
         "max_tokens": 2000,
         "temperature": 0.1,
+        "thinking": {"type": "disabled"},
     }
 
     try:
@@ -345,7 +346,7 @@ async def grade_essay(files: List[UploadFile] = File(...)):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "version": "v9-x-fix"}
+    return {"status": "ok", "version": "v10-fast"}
 
 
 @app.get("/")
