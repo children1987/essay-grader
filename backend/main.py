@@ -290,9 +290,9 @@ def annotate_image(image: Image.Image, errors: list, text_lines: list) -> Image.
             # 将 x_pct 映射到实际像素坐标，作为下划线的左端起点
             x_start = text_left + int(text_width * x_pct / 100)
 
-            # 下划线宽度：按错误词字符数估算，但限制最大宽度
+            # 下划线宽度：固定约5个词的宽度，不依赖error_text长度
             char_px = max(18, text_width // 35)
-            underline_w = min(max(len(error_text) * char_px, 80), text_width // 2)
+            underline_w = min(char_px * 6, text_width // 3)  # 约6个字符宽，不超过行宽1/3
             x_end = min(x_start + underline_w, text_right + 10)
 
             # 同一行多个错误时上下错开
