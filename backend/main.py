@@ -40,14 +40,14 @@ ERROR_COLORS = {
 }
 
 
-def resize_image(image: Image.Image, max_width: int = 1200) -> Image.Image:
+def resize_image(image: Image.Image, max_width: int = 800) -> Image.Image:
     w, h = image.size
     if w <= max_width:
         return image
     return image.resize((max_width, int(h * max_width / w)), Image.LANCZOS)
 
 
-def image_to_base64(image: Image.Image, quality: int = 85) -> str:
+def image_to_base64(image: Image.Image, quality: int = 70) -> str:
     if image.mode == "RGBA":
         image = image.convert("RGB")
     buf = io.BytesIO()
@@ -158,25 +158,16 @@ def y_pct_to_line(y_pct: float, text_lines: list, img_height: int) -> int:
 def mimo_analyze_essay(image: Image.Image) -> dict:
     img_b64 = image_to_base64(image)
 
-    prompt = """You are an expert English teacher. Analyze this handwritten essay for ALL errors.
+    prompt = """Analyze this English essay image. Find ALL grammar/spelling/punctuation errors.
 
-TASK:
-1. Read the essay line by line carefully
-2. Find ALL grammar, spelling, punctuation, and expression errors
-3. For each error, tell which line it is on and its approximate position from left
+Output strict JSON only:
+{"text":"full text","errors":[{"error":"wrong text","correction":"correct","category":"grammar|spelling|punctuation|style","message":"Chinese explanation","line":3,"x_pct":30}]}
 
-The essay body has about 6-8 lines of handwritten text (excluding title/name).
-
-OUTPUT FORMAT (strict JSON only):
-{"text":"full transcribed text","errors":[{"error":"exact wrong text","correction":"corrected text","category":"grammar|spelling|punctuation|style","message":"brief Chinese explanation","line":3,"x_pct":30}]}
-
-RULES:
-- "error" = EXACT wrong text from essay
-- "line" = line number (1-based, essay body only, not title/name line)
-- "x_pct" = horizontal position of error word from left (0=left edge, 100=right edge, estimate where the word starts)
-- category = grammar|spelling|punctuation|style
-- Find EVERY error including subject-verb agreement, tense, articles, prepositions
-- Output ONLY JSON, nothing else"""
+Rules:
+- line = 1-based line number (essay body only)
+- x_pct = word start position (0-100 from left)
+- Find every error including subject-verb agreement, tense
+- Output ONLY JSON"""
 
     payload = {
         "model": MIMO_MODEL,
@@ -184,7 +175,7 @@ RULES:
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
             {"type": "text", "text": prompt}
         ]}],
-        "max_tokens": 8000,
+        "max_tokens": 2000,
         "temperature": 0.1,
     }
 
@@ -331,7 +322,7 @@ async def grade_essay(files: List[UploadFile] = File(...)):
             all_errors.extend(errors)
             annotated = annotate_image(image, errors, text_lines)
             buf = io.BytesIO()
-            annotated.save(buf, format="PNG", optimize=True)
+            annotated.save(buf, format="JPEG", quality=85, optimize=True)
 
             results.append({
                 "original_text": ocr_text, "errors": errors,
