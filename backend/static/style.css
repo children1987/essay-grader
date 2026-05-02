@@ -1,0 +1,493 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #f5f5f5;
+    min-height: 100vh;
+    color: #333;
+}
+
+.app {
+    max-width: 100%;
+    min-height: 100vh;
+}
+
+.page {
+    display: none;
+    padding: 20px;
+    padding-bottom: 40px;
+}
+
+.page.active {
+    display: block;
+}
+
+.header {
+    text-align: center;
+    padding: 20px 0;
+    position: relative;
+}
+
+.header h1 {
+    font-size: 24px;
+    color: #333;
+    margin-bottom: 8px;
+}
+
+.subtitle {
+    color: #666;
+    font-size: 14px;
+}
+
+.back-btn {
+    position: absolute;
+    left: 0;
+    top: 50%;
+    transform: translateY(-50%);
+    background: none;
+    border: none;
+    font-size: 16px;
+    color: #007AFF;
+    cursor: pointer;
+    padding: 8px;
+}
+
+/* 上传区域 */
+.upload-area {
+    background: white;
+    border: 2px dashed #ddd;
+    border-radius: 16px;
+    padding: 40px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.3s;
+    margin-top: 20px;
+}
+
+.upload-area:active {
+    border-color: #007AFF;
+    background: #f0f8ff;
+}
+
+.upload-icon {
+    font-size: 48px;
+    margin-bottom: 12px;
+}
+
+.upload-area p {
+    color: #666;
+    margin: 4px 0;
+}
+
+.hint {
+    font-size: 12px;
+    color: #999;
+    margin-top: 12px;
+}
+
+/* 上传按钮组 */
+.upload-buttons {
+    display: flex;
+    gap: 16px;
+    justify-content: center;
+    margin-bottom: 8px;
+}
+
+.upload-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 120px;
+    height: 100px;
+    border: 2px solid #e0e0e0;
+    border-radius: 12px;
+    background: white;
+    cursor: pointer;
+    transition: all 0.2s;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.upload-btn:active {
+    transform: scale(0.95);
+}
+
+.camera-btn {
+    border-color: #007AFF;
+    background: #f0f8ff;
+}
+
+.camera-btn:active {
+    background: #dbeafe;
+}
+
+.gallery-btn {
+    border-color: #34c759;
+    background: #f0faf4;
+}
+
+.gallery-btn:active {
+    background: #dcfce7;
+}
+
+.upload-btn-icon {
+    font-size: 32px;
+    margin-bottom: 6px;
+}
+
+.upload-btn-text {
+    font-size: 14px;
+    font-weight: 500;
+    color: #333;
+}
+
+/* 预览区域 */
+.preview-container {
+    margin-top: 20px;
+}
+
+.preview-list {
+    display: flex;
+    gap: 12px;
+    overflow-x: auto;
+    padding: 10px 0;
+    scroll-snap-type: x mandatory;
+}
+
+.preview-item {
+    flex: 0 0 auto;
+    width: 150px;
+    position: relative;
+    scroll-snap-align: start;
+}
+
+.preview-item img {
+    width: 100%;
+    height: 200px;
+    object-fit: cover;
+    border-radius: 12px;
+    border: 2px solid #eee;
+}
+
+.preview-item .remove-btn {
+    position: absolute;
+    top: -8px;
+    right: -8px;
+    width: 24px;
+    height: 24px;
+    background: #ff3b30;
+    color: white;
+    border: none;
+    border-radius: 50%;
+    font-size: 14px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* 提交按钮 */
+.submit-btn {
+    width: 100%;
+    padding: 16px;
+    margin-top: 20px;
+    background: #007AFF;
+    color: white;
+    border: none;
+    border-radius: 12px;
+    font-size: 18px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.3s;
+}
+
+.submit-btn:disabled {
+    background: #ccc;
+    cursor: not-allowed;
+}
+
+.submit-btn:not(:disabled):active {
+    background: #0056b3;
+    transform: scale(0.98);
+}
+
+/* 结果页面 */
+.result-container {
+    margin-top: 20px;
+}
+
+.result-list {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.result-item {
+    background: white;
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.result-item img {
+    width: 100%;
+    display: block;
+}
+
+.error-summary {
+    background: white;
+    border-radius: 16px;
+    padding: 20px;
+    margin-top: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+.error-summary h3 {
+    margin-bottom: 12px;
+    font-size: 16px;
+}
+
+.error-tag {
+    display: inline-block;
+    padding: 6px 12px;
+    margin: 4px;
+    border-radius: 20px;
+    font-size: 14px;
+}
+
+.error-tag.spelling {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.error-tag.grammar {
+    background: #f8d7da;
+    color: #721c24;
+}
+
+.error-tag.punctuation {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+
+.error-tag.style {
+    background: #d4edda;
+    color: #155724;
+}
+
+/* 工具类 */
+.hidden {
+    display: none !important;
+}
+
+/* 加载动画 */
+.loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    padding: 60px 20px;
+}
+
+.spinner {
+    width: 40px;
+    height: 40px;
+    border: 4px solid #eee;
+    border-top-color: #007AFF;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.loading p {
+    margin-top: 16px;
+    color: #666;
+}
+
+/* 响应式 */
+@media (min-width: 768px) {
+    .app {
+        max-width: 600px;
+        margin: 0 auto;
+    }
+    
+    .preview-item {
+        width: 200px;
+    }
+    
+    .preview-item img {
+        height: 280px;
+    }
+}
+
+
+/* ===== 调试面板 ===== */
+.debug-panel {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 9999;
+    font-family: 'Courier New', monospace;
+    font-size: 11px;
+}
+.debug-header {
+    background: #1a1a2e;
+    color: #0f0;
+    padding: 6px 12px;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+.debug-header:active {
+    background: #16213e;
+}
+.debug-log {
+    background: #0a0a0a;
+    color: #ccc;
+    max-height: 250px;
+    overflow-y: auto;
+    padding: 4px 8px;
+    border-top: 1px solid #333;
+}
+.debug-entry {
+    padding: 2px 0;
+    border-bottom: 1px solid #1a1a1a;
+    word-break: break-all;
+}
+.debug-time {
+    color: #666;
+}
+.debug-type {
+    font-weight: bold;
+}
+.debug-info .debug-type { color: #4fc3f7; }
+.debug-error .debug-type { color: #ef5350; }
+.debug-warn .debug-type { color: #ffa726; }
+.debug-data {
+    margin: 2px 0 2px 16px;
+    padding: 4px;
+    background: #111;
+    border-radius: 3px;
+    color: #8bc34a;
+    white-space: pre-wrap;
+    font-size: 10px;
+    max-height: 100px;
+    overflow-y: auto;
+}
+
+/* ===== 错误详情面板 ===== */
+.error-detail {
+    background: white;
+    border-radius: 16px;
+    padding: 20px;
+    margin-top: 20px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+.error-detail h3 {
+    margin-bottom: 14px;
+    font-size: 16px;
+    color: #333;
+}
+#error-detail-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.error-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 14px;
+    border-radius: 12px;
+    border-left: 4px solid #ccc;
+    background: #fafafa;
+    transition: background 0.2s;
+}
+.error-item:active {
+    background: #f0f0f0;
+}
+.error-item.grammar {
+    border-left-color: #d32f2f;
+    background: #fff5f5;
+}
+.error-item.spelling {
+    border-left-color: #ff9800;
+    background: #fffaf0;
+}
+.error-item.punctuation {
+    border-left-color: #0288d1;
+    background: #f0f9ff;
+}
+.error-item.style {
+    border-left-color: #388e3c;
+    background: #f0faf2;
+}
+.error-idx {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    color: white;
+    font-size: 12px;
+    font-weight: 700;
+    flex-shrink: 0;
+}
+.error-item.grammar .error-idx { background: #d32f2f; }
+.error-item.spelling .error-idx { background: #ff9800; }
+.error-item.punctuation .error-idx { background: #0288d1; }
+.error-item.style .error-idx { background: #388e3c; }
+.error-cat {
+    font-size: 12px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-weight: 500;
+    flex-shrink: 0;
+}
+.error-item.grammar .error-cat { background: #ffcdd2; color: #b71c1c; }
+.error-item.spelling .error-cat { background: #ffe0b2; color: #e65100; }
+.error-item.punctuation .error-cat { background: #b3e5fc; color: #01579b; }
+.error-item.style .error-cat { background: #c8e6c9; color: #1b5e20; }
+.error-old {
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    color: #d32f2f;
+    text-decoration: line-through;
+    background: #ffebee;
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+.error-arrow {
+    color: #999;
+    font-size: 16px;
+    flex-shrink: 0;
+}
+.error-new {
+    font-family: 'Courier New', monospace;
+    font-size: 14px;
+    color: #2e7d32;
+    font-weight: 600;
+    background: #e8f5e9;
+    padding: 1px 6px;
+    border-radius: 4px;
+}
+.error-msg {
+    width: 100%;
+    font-size: 12px;
+    color: #666;
+    margin-top: 4px;
+    padding-left: 32px;
+    line-height: 1.5;
+}

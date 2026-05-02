@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>英语作文批改</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="app">
+        <!-- 首页 -->
+        <div id="home-page" class="page active">
+            <div class="header">
+                <h1>📝 英语作文批改</h1>
+                <p class="subtitle">拍照或从相册选择，智能标注语法错误</p>
+            </div>
+            
+            <div class="upload-area" id="upload-area">
+                <div class="upload-buttons">
+                    <button class="upload-btn camera-btn" id="camera-btn">
+                        <span class="upload-btn-icon">📷</span>
+                        <span class="upload-btn-text">拍照</span>
+                    </button>
+                    <button class="upload-btn gallery-btn" id="gallery-btn">
+                        <span class="upload-btn-icon">🖼️</span>
+                        <span class="upload-btn-text">从相册选择</span>
+                    </button>
+                </div>
+                <p class="hint">支持 1-2 张图片</p>
+                <!-- 拍照用：带 capture -->
+                <input type="file" id="camera-input" accept="image/*" multiple capture="environment" hidden>
+                <!-- 相册用：不带 capture -->
+                <input type="file" id="gallery-input" accept="image/*" multiple hidden>
+            </div>
+            
+            <div id="preview-container" class="preview-container hidden">
+                <div id="preview-list" class="preview-list"></div>
+                <button id="submit-btn" class="submit-btn" disabled>
+                    <span class="btn-text">开始批改</span>
+                    <span class="btn-loading hidden">分析中...</span>
+                </button>
+            </div>
+        </div>
+        
+        <!-- 结果页 -->
+        <div id="result-page" class="page">
+            <div class="header">
+                <button id="back-btn" class="back-btn">← 返回</button>
+                <h1>批改结果</h1>
+            </div>
+            
+            <div id="result-container" class="result-container">
+                <div id="result-list" class="result-list"></div>
+                
+                <div id="error-detail" class="error-detail hidden">
+                    <h3>📋 错误详情</h3>
+                    <div id="error-detail-list"></div>
+                </div>
+                <div id="error-summary" class="error-summary hidden">
+                    <h3>📊 错误统计</h3>
+                    <div id="summary-content"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- 调试面板 -->
+    <div id="debug-panel" class="debug-panel">
+        <div class="debug-header" id="debug-toggle">
+            🐛 调试日志 <span id="debug-count">(0)</span>
+        </div>
+        <div id="debug-log" class="debug-log"></div>
+    </div>
+    
+    <script src="/static/app.js"></script>
+</body>
+</html>
