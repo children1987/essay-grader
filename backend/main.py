@@ -246,17 +246,14 @@ def annotate_image(image: Image.Image, errors: list, text_lines: list) -> Image.
             text_width = text_right - text_left
             print(f"  Line {line_num}: text range x={text_left}-{text_right} (width={text_width})")
 
-            # x_pct 作为 MiMo 的粗略估计，结合文字边界修正
-            # MiMo 的 x_pct 大致表示错误词在整行中的起始百分比
-            # 将 x_pct 映射到 [text_left, text_right] 范围内
-            x_in_text = text_left + int(text_width * x_pct / 100)
+            # x_pct = 错误词在整行中的起始百分比（0=行首，100=行尾）
+            # 将 x_pct 映射到实际像素坐标，作为下划线的左端起点
+            x_start = text_left + int(text_width * x_pct / 100)
 
-            # 如果有错误文本，根据它在整行中的大致位置微调
-            # 粗略估算：每个字符约占 15-20px（手写体）
-            char_px = max(15, text_width // 40)
-            x_in_text += int(len(error_text) * char_px * 0.3)  # 向右偏移约半个词宽
-
-            x_center = min(max(x_in_text, text_left), text_right)
+            # 下划线宽度：按错误词字符数估算（手写体约 18-22px/字符）
+            char_px = max(18, text_width // 35)
+            underline_w = max(len(error_text) * char_px, 80)
+            x_end = min(x_start + underline_w, text_right + 10)
 
             # 同一行多个错误时上下错开
             offset = used_lines.get(line_num, 0)
@@ -264,10 +261,6 @@ def annotate_image(image: Image.Image, errors: list, text_lines: list) -> Image.
                 line_y += offset * 18
             used_lines[line_num] = offset + 1
 
-            # 下划线宽度：大约覆盖错误词长度
-            underline_w = max(len(error_text) * char_px, 60)
-            x_start = max(x_center - underline_w // 4, text_left - 5)
-            x_end = min(x_center + underline_w * 3 // 4, text_right + 5)
             y = line_y + 14  # 文字中心下方 14px
 
             # 3px 粗横线
