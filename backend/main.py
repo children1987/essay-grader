@@ -69,12 +69,11 @@ def _load_fonts():
 
 # ========== 行检测 ==========
 
-def detect_text_lines(image: Image.Image) -> list:
-    """水平投影分析检测文字行中心 y 坐标"""
+def detect_text_lines(image: Image.Image, expected_count: int = 0) -> list:
+    """水平投影分析检测文字行中心 y 坐标，自动找到作文正文区域"""
     gray = image.convert("L")
     w, h = gray.size
     pixels = gray.load()
-
     threshold = 140
     projection = []
     for y in range(h):
@@ -82,7 +81,6 @@ def detect_text_lines(image: Image.Image) -> list:
         projection.append(count)
 
     # Moving average
-    window = 7
     smooth = []
     for y in range(h):
         start = max(0, y - 3)
@@ -112,7 +110,54 @@ def detect_text_lines(image: Image.Image) -> list:
                 merged.append(p)
         peaks = merged
 
-    return peaks
+    if len(peaks) <= 1:
+        return peaks
+
+    # === 找到作文正文区域（行间距最均匀的连续子序列）===
+    if expected_count > 0 and len(peaks) > expected_count:
+        # 如果已知期望行数，找到最匹配的子序列
+        best_score = float('inf')
+        best_slice = peaks
+        for start_idx in range(len(peaks) - expected_count + 1):
+            candidate = peaks[start_idx:start_idx + expected_count]
+            # 计算间距的方差（越小越均匀）
+            spacings = [candidate[i+1] - candidate[i] for i in range(len(candidate)-1)]
+            if not spacings:
+                continue
+            mean_s = sum(spacings) / len(spacings)
+            variance = sum((s - mean_s) ** 2 for s in spacings) / len(spacings)
+            if variance < best_score:
+                best_score = variance
+                best_slice = candidate
+        print(f"  Essay lines: indices {peaks.index(best_slice[0])}-{peaks.index(best_slice[-1])}, variance={best_score:.0f}")
+        return best_slice
+
+    # 无期望行数时：找最长的均匀子序列
+    # 对每个可能的起止范围，计算间距方差
+    best_len = 0
+    best_slice = peaks
+    best_variance = float('inf')
+    for start_idx in range(len(peaks)):
+        for end_idx in range(start_idx + 3, len(peaks) + 1):
+            candidate = peaks[start_idx:end_idx]
+            spacings = [candidate[i+1] - candidate[i] for i in range(len(candidate)-1)]
+            if not spacings:
+                continue
+            mean_s = sum(spacings) / len(spacings)
+            # 跳过间距太小（<15px）或太大（>100px）的
+            if mean_s < 15 or mean_s > 100:
+                continue
+            variance = sum((s - mean_s) ** 2 for s in spacings) / len(spacings)
+            # 方差要小于间距的30%才算均匀
+            if variance > (mean_s * 0.3) ** 2:
+                continue
+            if len(candidate) > best_len or (len(candidate) == best_len and variance < best_variance):
+                best_len = len(candidate)
+                best_slice = candidate
+                best_variance = variance
+
+    print(f"  Essay region: {best_len} lines, spacing variance={best_variance:.0f}")
+    return best_slice
 
 
 def detect_line_x_range(image: Image.Image, y_center: int) -> tuple:
@@ -303,11 +348,7 @@ async def grade_essay(files: List[UploadFile] = File(...)):
             image = Image.open(io.BytesIO(contents))
             image = resize_image(image)
 
-            # Step 1: 检测文字行
-            text_lines = detect_text_lines(image)
-            print(f"Detected {len(text_lines)} text lines: {text_lines[:15]}")
-
-            # Step 2: MiMo 分析
+            # Step 1: MiMo 分析（先获取行数，用于优化行检测）
             result = mimo_analyze_essay(image)
             ocr_text = result.get("text", "")
             errors = result.get("errors", [])
@@ -319,6 +360,11 @@ async def grade_essay(files: List[UploadFile] = File(...)):
                 results.append({"original_text": "", "errors": [],
                     "annotated_image": base64.b64encode(contents).decode("utf-8")})
                 continue
+
+            # Step 2: 根据 OCR 文本行数优化行检测
+            ocr_line_count = len([l for l in ocr_text.strip().split("\n") if l.strip()])
+            text_lines = detect_text_lines(image, expected_count=ocr_line_count)
+            print(f"Detected {len(text_lines)} essay lines (expected {ocr_line_count}): {text_lines[:15]}")
 
             all_errors.extend(errors)
             annotated = annotate_image(image, errors, text_lines)
@@ -346,7 +392,7 @@ async def grade_essay(files: List[UploadFile] = File(...)):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "version": "v10-fast"}
+    return {"status": "ok", "version": "v11-line-fix"}
 
 
 @app.get("/")
