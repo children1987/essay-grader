@@ -167,10 +167,11 @@ def detect_line_x_range(image: Image.Image, y_center: int) -> tuple:
     pixels = gray.load()
     threshold = 140
     band = 12  # 上下扫描范围
+    margin = int(w * 0.08)  # 跳过左侧8%（页边红线区域）
 
-    # 垂直投影：每列有多少暗像素
-    projection = []
-    for x in range(w):
+    # 垂直投影：每列有多少暗像素（跳过左侧页边线）
+    projection = [0] * margin  # 前 margin 列设为0
+    for x in range(margin, w):
         count = sum(1 for y in range(max(0, y_center - band), min(h, y_center + band))
                     if pixels[x, y] < threshold)
         projection.append(count)
@@ -180,7 +181,7 @@ def detect_line_x_range(image: Image.Image, y_center: int) -> tuple:
     text_cols = [i for i, v in enumerate(projection) if v > avg * 0.1]
 
     if len(text_cols) < 5:
-        return (int(w * 0.05), int(w * 0.95))
+        return (int(w * 0.08), int(w * 0.95))
 
     return (text_cols[0], text_cols[-1])
 
