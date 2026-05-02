@@ -71,7 +71,17 @@
         </div>
         <div id="debug-log" class="debug-log"></div>
     </div>
-    
+
+    <!-- 全屏图片查看器 -->
+    <div id="image-viewer" class="image-viewer hidden">
+        <div class="viewer-header">
+            <span class="viewer-close" id="viewer-close">✕ 关闭</span>
+        </div>
+        <div class="viewer-container" id="viewer-container">
+            <img id="viewer-img" class="viewer-img" draggable="false">
+        </div>
+    </div>
+
     <script src="/static/app.js"></script>
 </body>
 </html>

@@ -227,7 +227,9 @@ function showResults(data) {
             
             const img = document.createElement("img");
             img.src = "data:image/png;base64," + item.annotated_image;
-            
+            img.style.cursor = "pointer";
+            img.addEventListener("click", () => openViewer(img.src));
+
             resultItem.appendChild(img);
             resultList.appendChild(resultItem);
         });
@@ -260,8 +262,10 @@ function showResults(data) {
                         const div = document.createElement("div");
                         div.className = "error-item " + (err.category || "style");
                         const catName = getCategoryName(err.category || "style");
+                        const lineNum = err.line ? ("第" + err.line + "行") : "";
                         div.innerHTML = '<span class="error-idx">#' + (i+1) + '</span>' +
                             '<span class="error-cat">' + catName + '</span>' +
+                            (lineNum ? '<span class="error-line">' + lineNum + '</span>' : '') +
                             '<span class="error-old">' + (err.error || "") + '</span>' +
                             '<span class="error-arrow">→</span>' +
                             '<span class="error-new">' + (err.correction || "") + '</span>' +
@@ -294,3 +298,157 @@ function goHome() {
     errorSummary.classList.add("hidden");
     errorDetail.classList.add("hidden");
 }
+
+// ===== 全屏图片查看器 =====
+const viewer = document.getElementById("image-viewer");
+const viewerImg = document.getElementById("viewer-img");
+const viewerContainer = document.getElementById("viewer-container");
+const viewerClose = document.getElementById("viewer-close");
+
+let scale = 1, panX = 0, panY = 0;
+let lastDist = 0, lastMidX = 0, lastMidY = 0;
+let isPanning = false, startPanX = 0, startPanY = 0;
+let lastTap = 0;
+
+function openViewer(src) {
+    viewerImg.src = src;
+    scale = 1; panX = 0; panY = 0;
+    updateTransform();
+    viewer.classList.remove("hidden");
+    document.body.style.overflow = "hidden";
+}
+
+function closeViewer() {
+    viewer.classList.add("hidden");
+    viewerImg.src = "";
+    document.body.style.overflow = "";
+}
+
+function updateTransform() {
+    viewerImg.style.transform = `translate(${panX}px, ${panY}px) scale(${scale})`;
+}
+
+function clampPan() {
+    if (scale <= 1) { panX = 0; panY = 0; return; }
+    const rect = viewerContainer.getBoundingClientRect();
+    const imgW = viewerImg.naturalWidth * scale;
+    const imgH = viewerImg.naturalHeight * scale;
+    const maxX = Math.max(0, (imgW - rect.width) / 2);
+    const maxY = Math.max(0, (imgH - rect.height) / 2);
+    panX = Math.max(-maxX, Math.min(maxX, panX));
+    panY = Math.max(-maxY, Math.min(maxY, panY));
+}
+
+// 点击关闭按钮
+viewerClose.addEventListener("click", closeViewer);
+
+// 点击背景关闭（未缩放时）
+viewerContainer.addEventListener("click", (e) => {
+    if (e.target === viewerContainer && scale <= 1) closeViewer();
+});
+
+// 双击放大/还原
+viewerContainer.addEventListener("click", (e) => {
+    if (e.target === viewerImg || e.target === viewerContainer) {
+        const now = Date.now();
+        if (now - lastTap < 300) {
+            if (scale > 1) {
+                scale = 1; panX = 0; panY = 0;
+            } else {
+                scale = 2.5;
+                const rect = viewerContainer.getBoundingClientRect();
+                panX = (rect.width / 2 - e.clientX) * 1.5;
+                panY = (rect.height / 2 - e.clientY) * 1.5;
+            }
+            clampPan();
+            updateTransform();
+            lastTap = 0;
+        } else {
+            lastTap = now;
+        }
+    }
+});
+
+// === 触摸事件：双指缩放 + 单指拖拽 ===
+viewerContainer.addEventListener("touchstart", (e) => {
+    if (e.touches.length === 2) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        lastDist = Math.hypot(dx, dy);
+        lastMidX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        lastMidY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    } else if (e.touches.length === 1 && scale > 1) {
+        e.preventDefault();
+        isPanning = true;
+        startPanX = e.touches[0].clientX - panX;
+        startPanY = e.touches[0].clientY - panY;
+    }
+}, { passive: false });
+
+viewerContainer.addEventListener("touchmove", (e) => {
+    if (e.touches.length === 2) {
+        e.preventDefault();
+        const dx = e.touches[0].clientX - e.touches[1].clientX;
+        const dy = e.touches[0].clientY - e.touches[1].clientY;
+        const dist = Math.hypot(dx, dy);
+        const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+        const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+
+        // 缩放
+        const ratio = dist / lastDist;
+        scale = Math.max(0.5, Math.min(5, scale * ratio));
+        lastDist = dist;
+
+        // 平移（跟手中指）
+        panX += midX - lastMidX;
+        panY += midY - lastMidY;
+        lastMidX = midX;
+        lastMidY = midY;
+
+        clampPan();
+        updateTransform();
+    } else if (e.touches.length === 1 && isPanning) {
+        e.preventDefault();
+        panX = e.touches[0].clientX - startPanX;
+        panY = e.touches[0].clientY - startPanY;
+        clampPan();
+        updateTransform();
+    }
+}, { passive: false });
+
+viewerContainer.addEventListener("touchend", (e) => {
+    isPanning = false;
+    if (e.touches.length < 2) lastDist = 0;
+    // 如果缩放回到 1，重置位置
+    if (scale < 0.8) { scale = 1; panX = 0; panY = 0; updateTransform(); }
+});
+
+// === 鼠标滚轮缩放（PC端） ===
+viewerContainer.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const delta = e.deltaY > 0 ? 0.9 : 1.1;
+    scale = Math.max(0.5, Math.min(5, scale * delta));
+    clampPan();
+    updateTransform();
+}, { passive: false });
+
+// === 鼠标拖拽（PC端） ===
+let mouseDown = false, mouseStartX = 0, mouseStartY = 0;
+viewerContainer.addEventListener("mousedown", (e) => {
+    if (scale > 1) {
+        mouseDown = true;
+        mouseStartX = e.clientX - panX;
+        mouseStartY = e.clientY - panY;
+        e.preventDefault();
+    }
+});
+document.addEventListener("mousemove", (e) => {
+    if (mouseDown) {
+        panX = e.clientX - mouseStartX;
+        panY = e.clientY - mouseStartY;
+        clampPan();
+        updateTransform();
+    }
+});
+document.addEventListener("mouseup", () => { mouseDown = false; });
