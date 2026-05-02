@@ -1,6 +1,6 @@
 """
 英语作文批改 API 服务
-使用小米 MiMo V2.5 omni 模型做手写 OCR + 语法检查
+MiMo V2.5 错误分析 + 行号定位 + 水平投影行检测
 """
 import os
 import io
@@ -28,23 +28,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# MiMo API 配置
 MIMO_API_URL = "https://token-plan-cn.xiaomimimo.com/v1/chat/completions"
 MIMO_API_KEY = os.environ.get("MIMO_API_KEY", "")
 MIMO_MODEL = "mimo-v2-omni"
 
 ERROR_COLORS = {
-    "spelling": (255, 152, 0),    # 橙色
-    "grammar": (211, 47, 47),     # 红色
-    "punctuation": (2, 136, 209), # 蓝色
-    "style": (56, 142, 60),       # 绿色
-}
-
-CATEGORY_NAMES = {
-    "spelling": "拼写",
-    "grammar": "语法",
-    "punctuation": "标点",
-    "style": "表达",
+    "spelling": (255, 140, 0),
+    "grammar": (220, 40, 40),
+    "punctuation": (0, 120, 200),
+    "style": (40, 160, 60),
 }
 
 
@@ -52,8 +44,7 @@ def resize_image(image: Image.Image, max_width: int = 1200) -> Image.Image:
     w, h = image.size
     if w <= max_width:
         return image
-    new_h = int(h * max_width / w)
-    return image.resize((max_width, new_h), Image.LANCZOS)
+    return image.resize((max_width, int(h * max_width / w)), Image.LANCZOS)
 
 
 def image_to_base64(image: Image.Image, quality: int = 85) -> str:
@@ -64,289 +55,313 @@ def image_to_base64(image: Image.Image, quality: int = 85) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-def mimo_ocr_and_check(image: Image.Image) -> dict:
-    """
-    用 MiMo V2.5 omni 模型同时完成 OCR + 语法检查
-    """
+def _load_fonts():
+    for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]:
+        if os.path.exists(p):
+            try:
+                return (ImageFont.truetype(p, 16), ImageFont.truetype(p, 13), ImageFont.truetype(p, 14))
+            except Exception:
+                pass
+    f = ImageFont.load_default()
+    return f, f, f
+
+
+# ========== 行检测 ==========
+
+def detect_text_lines(image: Image.Image) -> list:
+    """水平投影分析检测文字行中心 y 坐标"""
+    gray = image.convert("L")
+    w, h = gray.size
+    pixels = gray.load()
+
+    threshold = 140
+    projection = []
+    for y in range(h):
+        count = sum(1 for x in range(0, w, 3) if pixels[x, y] < threshold)
+        projection.append(count)
+
+    # Moving average
+    window = 7
+    smooth = []
+    for y in range(h):
+        start = max(0, y - 3)
+        end = min(h, y + 4)
+        smooth.append(sum(projection[start:end]) / (end - start))
+
+    # Find peaks
+    avg = sum(smooth) / len(smooth) if smooth else 1
+    peaks = []
+    in_peak = False
+    peak_start = 0
+    for y in range(h):
+        if smooth[y] > avg * 0.3 and not in_peak:
+            in_peak = True
+            peak_start = y
+        elif smooth[y] <= avg * 0.3 and in_peak:
+            in_peak = False
+            peaks.append((peak_start + y) // 2)
+
+    # 过滤掉太短的间隔（合并靠得很近的行）
+    if len(peaks) > 1:
+        merged = [peaks[0]]
+        for p in peaks[1:]:
+            if p - merged[-1] < 30:  # 间距小于30px视为同一行
+                merged[-1] = (merged[-1] + p) // 2
+            else:
+                merged.append(p)
+        peaks = merged
+
+    return peaks
+
+
+def detect_line_x_range(image: Image.Image, y_center: int) -> tuple:
+    """水平投影检测某行文字的左右边界 (x_start, x_end)"""
+    gray = image.convert("L")
+    w, h = gray.size
+    pixels = gray.load()
+    threshold = 140
+    band = 12  # 上下扫描范围
+
+    # 垂直投影：每列有多少暗像素
+    projection = []
+    for x in range(w):
+        count = sum(1 for y in range(max(0, y_center - band), min(h, y_center + band))
+                    if pixels[x, y] < threshold)
+        projection.append(count)
+
+    # 找到有文字的列范围（投影 > 0 的区域）
+    avg = sum(projection) / len(projection) if projection else 0
+    text_cols = [i for i, v in enumerate(projection) if v > avg * 0.1]
+
+    if len(text_cols) < 5:
+        return (int(w * 0.05), int(w * 0.95))
+
+    return (text_cols[0], text_cols[-1])
+
+
+def y_pct_to_line(y_pct: float, text_lines: list, img_height: int) -> int:
+    """将 y 百分比转换为最近的文字行索引"""
+    y = img_height * y_pct / 100
+    best_idx = 0
+    best_dist = float('inf')
+    for i, ly in enumerate(text_lines):
+        dist = abs(y - ly)
+        if dist < best_dist:
+            best_dist = dist
+            best_idx = i
+    return best_idx
+
+
+# ========== MiMo ==========
+
+def mimo_analyze_essay(image: Image.Image) -> dict:
     img_b64 = image_to_base64(image)
 
-    prompt = """You are an English teacher grading a handwritten essay photo.
+    prompt = """You are an expert English teacher. Analyze this handwritten essay for ALL errors.
 
 TASK:
-1. Carefully read the English essay in this handwritten image
-2. Transcribe the full text as accurately as possible
-3. Find ALL grammar, spelling, punctuation, and expression errors
-4. For EACH error line, estimate its vertical position in the image
+1. Read the essay line by line carefully
+2. Find ALL grammar, spelling, punctuation, and expression errors
+3. For each error, tell which line it is on and its approximate position from left
 
-OUTPUT FORMAT (strict JSON only, no markdown, no explanation):
-{"text":"full transcribed essay text","errors":[{"error":"exact wrong text from essay","correction":"corrected text","category":"grammar|spelling|punctuation|style","message":"brief Chinese explanation","y_pct":35}]}
+The essay body has about 6-8 lines of handwritten text (excluding title/name).
 
-IMPORTANT RULES:
-- "error" must be the EXACT wrong word/phrase from the essay
-- "y_pct" = vertical position of that error LINE as percentage (0=top, 100=bottom). Look at where the text line sits on the paper. The title line is about 20-25%, first body line ~30-35%, each subsequent line adds ~5-8%.
-- category must be one of: grammar, spelling, punctuation, style
-- If no errors, return {"text":"...","errors":[]}
-- Output ONLY the JSON object, nothing else"""
+OUTPUT FORMAT (strict JSON only):
+{"text":"full transcribed text","errors":[{"error":"exact wrong text","correction":"corrected text","category":"grammar|spelling|punctuation|style","message":"brief Chinese explanation","line":3,"x_pct":30}]}
+
+RULES:
+- "error" = EXACT wrong text from essay
+- "line" = line number (1-based, essay body only, not title/name line)
+- "x_pct" = horizontal position of error word from left (0=left edge, 100=right edge, estimate where the word starts)
+- category = grammar|spelling|punctuation|style
+- Find EVERY error including subject-verb agreement, tense, articles, prepositions
+- Output ONLY JSON, nothing else"""
 
     payload = {
         "model": MIMO_MODEL,
-        "messages": [{
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                {"type": "text", "text": prompt}
-            ]
-        }],
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+            {"type": "text", "text": prompt}
+        ]}],
         "max_tokens": 8000,
         "temperature": 0.1,
     }
 
     try:
-        resp = requests.post(
-            MIMO_API_URL,
-            headers={
-                "Authorization": f"Bearer {MIMO_API_KEY}",
-                "Content-Type": "application/json",
-            },
-            json=payload,
-            timeout=120,
-        )
+        resp = requests.post(MIMO_API_URL,
+            headers={"Authorization": f"Bearer {MIMO_API_KEY}", "Content-Type": "application/json"},
+            json=payload, timeout=120)
         resp.raise_for_status()
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
+        content = resp.json()["choices"][0]["message"]["content"].strip()
 
-        content = content.strip()
         if not content:
-            reasoning = data["choices"][0]["message"].get("reasoning_content", "")
-            json_match = re.search(r'\{[\s\S]*"text"\s*:\s*"[\s\S]*\}\s*\}\s*\]', reasoning)
-            if json_match:
-                content = json_match.group(0)
+            reasoning = resp.json()["choices"][0]["message"].get("reasoning_content", "")
+            m = re.search(r'\{[\s\S]*"text"\s*:\s*"[\s\S]*\}\s*\}\s*\]', reasoning)
+            if m:
+                content = m.group(0)
+
         if content.startswith("```"):
             content = re.sub(r'^```\w*\n?', '', content)
             content = re.sub(r'\n?```$', '', content)
-        content = content.strip()
 
-        result = json.loads(content)
-        return result
-
-    except json.JSONDecodeError as e:
-        print(f"MiMo JSON parse error: {e}")
-        print(f"Raw content: {content[:500]}")
-        return {"text": "", "errors": []}
+        return json.loads(content.strip())
     except Exception as e:
-        print(f"MiMo API error: {e}")
+        print(f"MiMo error: {e}")
         traceback.print_exc()
         return {"text": "", "errors": []}
 
 
-def _load_fonts():
-    paths = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-    ]
-    for p in paths:
-        if os.path.exists(p):
-            try:
-                return (
-                    ImageFont.truetype(p, 16),   # 标签字体
-                    ImageFont.truetype(p, 13),   # 小字体
-                    ImageFont.truetype(p, 11),   # 微字体
-                    ImageFont.truetype(p, 14),   # 编号字体
-                )
-            except Exception:
-                pass
-    f = ImageFont.load_default()
-    return f, f, f, f
+# ========== 标注 ==========
 
-
-def annotate_image(image: Image.Image, errors: list) -> Image.Image:
-    """在原图上标注错误位置 - 专业版标注"""
-    if not errors:
+def annotate_image(image: Image.Image, errors: list, text_lines: list) -> Image.Image:
+    if not errors or not text_lines:
         return image
+
     try:
-        return _annotate_pro(image, errors)
+        annotated = image.copy().convert("RGB")
+        draw = ImageDraw.Draw(annotated)
+        font_label, font_small, font_tag = _load_fonts()
+        width, height = annotated.size
+
+        used_lines = {}  # 同一行多个错误时错开
+
+        for error in errors:
+            error_text = error.get("error", "")
+            cat = error.get("category", "style")
+            line_num = error.get("line", 0)
+            x_pct = error.get("x_pct", 50)
+            correction = error.get("correction", "")
+            color = ERROR_COLORS.get(cat, (128, 128, 128))
+
+            if line_num <= 0 or line_num > len(text_lines):
+                print(f"  ✗ '{error_text}' -> line {line_num} out of range (max={len(text_lines)}), skip")
+                continue
+
+            # y 坐标：直接用检测到的文字行中心
+            line_y = text_lines[line_num - 1]
+
+            # x 坐标：用水平投影检测该行实际文字边界
+            text_left, text_right = detect_line_x_range(image, line_y)
+            text_width = text_right - text_left
+            print(f"  Line {line_num}: text range x={text_left}-{text_right} (width={text_width})")
+
+            # x_pct 作为 MiMo 的粗略估计，结合文字边界修正
+            # MiMo 的 x_pct 大致表示错误词在整行中的起始百分比
+            # 将 x_pct 映射到 [text_left, text_right] 范围内
+            x_in_text = text_left + int(text_width * x_pct / 100)
+
+            # 如果有错误文本，根据它在整行中的大致位置微调
+            # 粗略估算：每个字符约占 15-20px（手写体）
+            char_px = max(15, text_width // 40)
+            x_in_text += int(len(error_text) * char_px * 0.3)  # 向右偏移约半个词宽
+
+            x_center = min(max(x_in_text, text_left), text_right)
+
+            # 同一行多个错误时上下错开
+            offset = used_lines.get(line_num, 0)
+            if offset > 0:
+                line_y += offset * 18
+            used_lines[line_num] = offset + 1
+
+            # 下划线宽度：大约覆盖错误词长度
+            underline_w = max(len(error_text) * char_px, 60)
+            x_start = max(x_center - underline_w // 4, text_left - 5)
+            x_end = min(x_center + underline_w * 3 // 4, text_right + 5)
+            y = line_y + 14  # 文字中心下方 14px
+
+            # 3px 粗横线
+            for dy in range(3):
+                draw.line([(x_start, y + dy), (x_end, y + dy)], fill=color, width=1)
+
+            # 左端小圆点
+            draw.ellipse([x_start - 3, y - 1, x_start + 5, y + 5], fill=color)
+
+            # 修正标签
+            if correction:
+                label = f"→ {correction[:20]}"
+                lbox = draw.textbbox((0, 0), label, font=font_small)
+                lw = lbox[2] - lbox[0]
+                lh = lbox[3] - lbox[1]
+                lx = x_end + 6
+                ly = y - lh // 2
+                if lx + lw > width - 10:
+                    lx = x_start - lw - 6
+                draw.rounded_rectangle(
+                    [lx - 3, ly - 2, lx + lw + 3, ly + lh + 2],
+                    radius=4, fill=(255, 255, 255), outline=color, width=1
+                )
+                draw.text((lx, ly), label, fill=color, font=font_small)
+
+            print(f"  ✓ '{error_text}' -> line {line_num}, y={text_lines[line_num-1]}, y_underline={y}, x={x_start}-{x_end}")
+
+        return annotated
     except Exception as e:
         print(f"annotate failed: {e}")
         traceback.print_exc()
-        return _annotate_fallback(image, errors)
+        return image
 
 
-def _annotate_pro(image: Image.Image, errors: list) -> Image.Image:
-    """
-    专业标注方案：
-    - 左侧：彩色圆形编号标记（在页边空白处，不遮挡文字）
-    - 中间：半透明细横线标记错误行位置
-    - 右侧：修正建议标签（小字号，白色背景）
-    - 同行错误：上下错开避免重叠
-    """
-    annotated = image.copy().convert("RGB")
-    draw = ImageDraw.Draw(annotated)
-    width, height = annotated.size
-    font_label, font_small, font_tiny, font_num = _load_fonts()
-
-    # 计算左右边距
-    left_margin = 8
-    right_margin = 8
-    marker_x = left_margin + 14  # 编号圆点中心 x
-    label_x_start = width - 220  # 右侧标签起始 x
-
-    # 处理同行重叠：按 y_pct 排序，同一行的错开
-    sorted_errors = sorted(enumerate(errors), key=lambda x: x[1].get("y_pct", 50))
-
-    # 跟踪已占用的 y 区域，避免标签重叠
-    used_y_zones = []
-
-    for rank, (orig_idx, error) in enumerate(sorted_errors):
-        y_pct = error.get("y_pct", 50)
-        y_center = int(height * y_pct / 100)
-        cat = error.get("category", "style")
-        color = ERROR_COLORS.get(cat, (128, 128, 128))
-        correction = error.get("correction", "")
-
-        # 避免标签重叠：如果 y 区域已被占用，稍微偏移
-        offset_y = 0
-        for used_y in used_y_zones:
-            if abs(y_center + offset_y - used_y) < 22:
-                offset_y += 24
-        used_y_zones.append(y_center + offset_y)
-        y_adj = y_center + offset_y
-
-        # 1. 左侧彩色圆形编号（在页边空白处）
-        circle_r = 12
-        cx, cy = marker_x, y_adj
-        # 外圈（白色底）
-        draw.ellipse([cx - circle_r - 2, cy - circle_r - 2,
-                       cx + circle_r + 2, cy + circle_r + 2],
-                      fill=(255, 255, 255), outline=color, width=2)
-        # 内圈（彩色）
-        draw.ellipse([cx - circle_r, cy - circle_r,
-                       cx + circle_r, cy + circle_r],
-                      fill=color)
-        # 编号文字（白色）
-        num_text = str(orig_idx + 1)
-        bbox = draw.textbbox((0, 0), num_text, font=font_num)
-        tw = bbox[2] - bbox[0]
-        th = bbox[3] - bbox[1]
-        draw.text((cx - tw // 2, cy - th // 2 - 1), num_text,
-                   fill=(255, 255, 255), font=font_num)
-
-        # 2. 从圆点到文字区域画一条细引导线（虚线效果）
-        line_start_x = cx + circle_r + 4
-        line_end_x = label_x_start - 10
-        if line_end_x > line_start_x:
-            dash_len = 6
-            gap_len = 4
-            x = line_start_x
-            while x < line_end_x:
-                x_end = min(x + dash_len, line_end_x)
-                draw.line([(x, y_adj), (x_end, y_adj)], fill=color, width=1)
-                x += dash_len + gap_len
-
-        # 3. 右侧修正建议标签（白色圆角背景 + 彩色文字）
-        if correction:
-            label_text = f"→ {correction[:25]}"
-            lbox = draw.textbbox((0, 0), label_text, font=font_small)
-            lw = lbox[2] - lbox[0]
-            lh = lbox[3] - lbox[1]
-            pad_x, pad_y = 6, 3
-            label_bg_x0 = label_x_start
-            label_bg_y0 = y_adj - lh // 2 - pad_y
-            label_bg_x1 = label_x_start + lw + pad_x * 2
-            label_bg_y1 = y_adj + lh // 2 + pad_y
-
-            # 白色背景 + 彩色边框
-            draw.rounded_rectangle(
-                [label_bg_x0, label_bg_y0, label_bg_x1, label_bg_y1],
-                radius=6,
-                fill=(255, 255, 255),
-                outline=color,
-                width=2
-            )
-            draw.text((label_bg_x0 + pad_x, label_bg_y0 + pad_y),
-                       label_text, fill=color, font=font_small)
-
-    return annotated
-
-
-def _annotate_fallback(image: Image.Image, errors: list) -> Image.Image:
-    """降级方案：底部显示错误列表"""
-    annotated = image.copy()
-    width, height = annotated.size
-    font_label, font_small, _, _ = _load_fonts()
-    error_height = min(len(errors) * 28 + 50, height // 3)
-    new_height = height + error_height
-    new_image = Image.new("RGB", (width, new_height), (255, 255, 255))
-    new_image.paste(annotated, (0, 0))
-    draw = ImageDraw.Draw(new_image)
-    draw.rectangle([(0, height), (width, new_height)], fill=(33, 37, 41))
-    draw.text((20, height + 12), f"发现 {len(errors)} 处错误:", fill=(255, 255, 255), font=font_label)
-    y = height + 42
-    for i, error in enumerate(errors[:10]):
-        color = ERROR_COLORS.get(error.get("category", "style"), (128, 128, 128))
-        cat_name = CATEGORY_NAMES.get(error.get("category", ""), "")
-        line = f"{i+1}. [{cat_name}] {error.get('error', '')[:30]} → {error.get('correction', '')[:30]}"
-        draw.text((20, y), line[:65], fill=color, font=font_small)
-        y += 28
-    return new_image
-
+# ========== API ==========
 
 @app.post("/api/grade")
 async def grade_essay(files: List[UploadFile] = File(...)):
     if len(files) > 2:
         raise HTTPException(status_code=400, detail="最多只能上传2张图片")
+
     results = []
     all_errors = []
+
     for file in files:
         try:
             contents = await file.read()
             image = Image.open(io.BytesIO(contents))
             image = resize_image(image)
 
-            result = mimo_ocr_and_check(image)
+            # Step 1: 检测文字行
+            text_lines = detect_text_lines(image)
+            print(f"Detected {len(text_lines)} text lines: {text_lines[:15]}")
+
+            # Step 2: MiMo 分析
+            result = mimo_analyze_essay(image)
             ocr_text = result.get("text", "")
             errors = result.get("errors", [])
+            print(f"MiMo found {len(errors)} errors")
+            for e in errors:
+                print(f"  - line {e.get('line')}: '{e.get('error')}' -> '{e.get('correction')}' x={e.get('x_pct')}")
 
             if not ocr_text.strip():
-                results.append({
-                    "original_text": "",
-                    "errors": [],
-                    "annotated_image": base64.b64encode(contents).decode("utf-8")
-                })
+                results.append({"original_text": "", "errors": [],
+                    "annotated_image": base64.b64encode(contents).decode("utf-8")})
                 continue
 
             all_errors.extend(errors)
-            annotated = annotate_image(image, errors)
-            buffer = io.BytesIO()
-            annotated.save(buffer, format="PNG", optimize=True)
-            annotated_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+            annotated = annotate_image(image, errors, text_lines)
+            buf = io.BytesIO()
+            annotated.save(buf, format="PNG", optimize=True)
 
             results.append({
-                "original_text": ocr_text,
-                "errors": errors,
-                "annotated_image": annotated_base64
+                "original_text": ocr_text, "errors": errors,
+                "annotated_image": base64.b64encode(buf.getvalue()).decode("utf-8")
             })
         except Exception as e:
-            print(f"Error processing file: {e}")
+            print(f"Error: {e}")
             traceback.print_exc()
-            results.append({
-                "original_text": "",
-                "errors": [],
-                "annotated_image": base64.b64encode(contents).decode("utf-8")
-            })
+            results.append({"original_text": "", "errors": [],
+                "annotated_image": base64.b64encode(contents).decode("utf-8")})
 
     categories = {}
     for error in all_errors:
         cat = error.get("category", "style")
         categories[cat] = categories.get(cat, 0) + 1
-    return JSONResponse({
-        "results": results,
-        "summary": {"total_errors": len(all_errors), "categories": categories}
-    })
+
+    return JSONResponse({"results": results,
+        "summary": {"total_errors": len(all_errors), "categories": categories}})
 
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok"}
+    return {"status": "ok", "version": "v9-x-fix"}
 
 
 @app.get("/")
@@ -361,7 +376,6 @@ async def root():
 _static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(_static_dir):
     app.mount("/static", StaticFiles(directory=_static_dir), name="static")
-
 
 if __name__ == "__main__":
     import uvicorn
