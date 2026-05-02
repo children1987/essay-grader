@@ -207,9 +207,11 @@ def mimo_analyze_essay(image: Image.Image) -> dict:
     prompt = """Analyze this English essay image. Find ALL grammar/spelling/punctuation errors.
 
 Output strict JSON only:
-{"text":"full text","errors":[{"error":"wrong text","correction":"correct","category":"grammar|spelling|punctuation|style","message":"Chinese explanation","line":3,"x_pct":30}]}
+{"text":"full text","errors":[{"error":"wrong word","correction":"correct word","category":"grammar|spelling|punctuation|style","message":"Chinese explanation","line":3,"x_pct":30}]}
 
 Rules:
+- "error" = ONLY the specific wrong word/phrase (max 3 words). NOT the full sentence.
+- "correction" = the corrected version of just that word/phrase
 - line = 1-based line number (essay body only)
 - x_pct = word start position (0-100 from left)
 - Find every error including subject-verb agreement, tense
@@ -288,9 +290,9 @@ def annotate_image(image: Image.Image, errors: list, text_lines: list) -> Image.
             # 将 x_pct 映射到实际像素坐标，作为下划线的左端起点
             x_start = text_left + int(text_width * x_pct / 100)
 
-            # 下划线宽度：按错误词字符数估算（手写体约 18-22px/字符）
+            # 下划线宽度：按错误词字符数估算，但限制最大宽度
             char_px = max(18, text_width // 35)
-            underline_w = max(len(error_text) * char_px, 80)
+            underline_w = min(max(len(error_text) * char_px, 80), text_width // 2)
             x_end = min(x_start + underline_w, text_right + 10)
 
             # 同一行多个错误时上下错开
