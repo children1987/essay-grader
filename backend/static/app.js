@@ -178,30 +178,53 @@ async function handleSubmit() {
         
         const startTime = Date.now();
         debugLog("info", "发送请求...");
-        
-        const response = await fetch(url, {
-            method: "POST",
-            body: formData
-        });
-        
+
+        // 带超时和重试的 fetch
+        let response = null;
+        let lastError = null;
+        const MAX_RETRIES = 1;
+        const TIMEOUT_MS = 90000; // 90秒超时（Render Free 冷启动可能慢）
+
+        for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+            try {
+                if (attempt > 0) {
+                    debugLog("info", "重试第 " + attempt + " 次...");
+                    await new Promise(r => setTimeout(r, 3000)); // 等3秒再重试
+                }
+                const controller = new AbortController();
+                const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+                response = await fetch(url, {
+                    method: "POST",
+                    body: formData,
+                    signal: controller.signal
+                });
+                clearTimeout(timer);
+                break; // 成功就跳出重试循环
+            } catch (e) {
+                lastError = e;
+                debugLog("error", "请求失败 (attempt " + (attempt + 1) + "): " + e.message);
+                if (attempt >= MAX_RETRIES) throw e;
+            }
+        }
+
         const elapsed = Date.now() - startTime;
         debugLog("info", "收到响应: HTTP " + response.status + " (" + elapsed + "ms)");
-        
+
         if (!response.ok) {
             const errText = await response.text();
             debugLog("error", "服务器返回错误", { status: response.status, body: errText.substring(0, 500) });
             throw new Error("服务器错误 HTTP " + response.status + ": " + errText.substring(0, 100));
         }
-        
+
         const result = await response.json();
         debugLog("info", "批改完成", {
             totalErrors: result.summary?.total_errors,
             categories: result.summary?.categories,
             resultsCount: result.results?.length
         });
-        
+
         showResults(result);
-        
+
     } catch (error) {
         debugLog("error", "批改失败: " + error.message, {
             name: error.name,
