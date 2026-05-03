@@ -186,17 +186,49 @@ def detect_line_x_range(image: Image.Image, y_center: int) -> tuple:
     return (text_cols[0], text_cols[-1])
 
 
-def y_pct_to_line(y_pct: float, text_lines: list, img_height: int) -> int:
-    """将 y 百分比转换为最近的文字行索引"""
-    y = img_height * y_pct / 100
-    best_idx = 0
-    best_dist = float('inf')
-    for i, ly in enumerate(text_lines):
-        dist = abs(y - ly)
-        if dist < best_dist:
-            best_dist = dist
-            best_idx = i
-    return best_idx
+def compute_x_from_ocr(error_text: str, ocr_line: str) -> tuple:
+    """在OCR行文本中查找错误词，返回 (start_pct, width_pct)
+    start_pct: 错误词起始位置占行长度的百分比 (0-100)
+    width_pct: 错误词宽度占行长度的百分比 (0-100)
+    """
+    if not ocr_line or not error_text:
+        return (50.0, 10.0)
+
+    error_clean = ' '.join(error_text.split())
+    line_lower = ocr_line.lower()
+    line_len = len(ocr_line)
+    if line_len == 0:
+        return (50.0, 10.0)
+
+    # 1. 精确匹配错误短语
+    idx = line_lower.find(error_clean.lower())
+    if idx >= 0:
+        start_pct = (idx / line_len) * 100
+        width_pct = (len(error_clean) / line_len) * 100
+        return (start_pct, width_pct)
+
+    # 2. 匹配错误短语的前几个词（MiMo可能OCR有细微差异）
+    words = error_clean.split()
+    for n_words in range(min(3, len(words)), 0, -1):
+        phrase = ' '.join(words[:n_words])
+        idx = line_lower.find(phrase.lower())
+        if idx >= 0:
+            start_pct = (idx / line_len) * 100
+            # 估算完整短语宽度
+            est_len = len(error_clean) if n_words == len(words) else len(phrase) + 3
+            width_pct = (est_len / line_len) * 100
+            return (start_pct, width_pct)
+
+    # 3. 只匹配第一个词
+    if words:
+        idx = line_lower.find(words[0].lower())
+        if idx >= 0:
+            start_pct = (idx / line_len) * 100
+            width_pct = (len(error_clean) / line_len) * 100
+            return (start_pct, width_pct)
+
+    # 4. fallback: 用MiMo的x_pct（会在annotate_image里传入）
+    return (None, None)  # 表示未匹配，fallback到MiMo x_pct
 
 
 # ========== MiMo ==========
@@ -254,7 +286,7 @@ Rules:
 
 # ========== 标注 ==========
 
-def annotate_image(image: Image.Image, errors: list, text_lines: list) -> Image.Image:
+def annotate_image(image: Image.Image, errors: list, text_lines: list, ocr_lines: list = None) -> Image.Image:
     if not errors or not text_lines:
         return image
 
@@ -281,18 +313,38 @@ def annotate_image(image: Image.Image, errors: list, text_lines: list) -> Image.
             # y 坐标：直接用检测到的文字行中心
             line_y = text_lines[line_num - 1]
 
-            # x 坐标：用水平投影检测该行实际文字边界
+            # x 坐标：优先用OCR文本计算字符偏移量（比MiMo x_pct精确得多）
+            ocr_line = ocr_lines[line_num - 1] if ocr_lines and line_num <= len(ocr_lines) else ""
+            ocr_x_pct, ocr_width_pct = compute_x_from_ocr(error_text, ocr_line)
+
+            if ocr_x_pct is not None:
+                # 用OCR字符偏移量（更精确）
+                x_pct = ocr_x_pct
+                print(f"  ✓ Using OCR-based x_pct={x_pct:.1f}% (error='{error_text}', line='{ocr_line[:50]}...')")
+            else:
+                # fallback到MiMo x_pct
+                print(f"  ⚠ OCR match failed, fallback to MiMo x_pct={x_pct} (error='{error_text}')")
+
+            # 用垂直投影检测该行实际文字边界
             text_left, text_right = detect_line_x_range(image, line_y)
             text_width = text_right - text_left
             print(f"  Line {line_num}: text range x={text_left}-{text_right} (width={text_width})")
 
-            # x_pct = 错误词在整行中的起始百分比（0=行首，100=行尾）
             # 将 x_pct 映射到实际像素坐标，作为下划线的左端起点
             x_start = text_left + int(text_width * x_pct / 100)
 
-            # 下划线宽度：固定约5个词的宽度，不依赖error_text长度
-            char_px = max(18, text_width // 35)
-            underline_w = min(char_px * 6, text_width // 3)  # 约6个字符宽，不超过行宽1/3
+            # 下划线宽度：基于错误词在行中的字符占比（更精确）
+            if ocr_width_pct is not None and ocr_width_pct > 0:
+                # 用OCR计算的宽度百分比
+                underline_w = int(text_width * ocr_width_pct / 100)
+            else:
+                # fallback：按错误词字符数估算
+                char_px = max(18, text_width // 35)
+                underline_w = char_px * min(len(error_text.split()) * 2 + 1, 8)
+            # 保证最小宽度和最大宽度
+            min_w = int(text_width * 0.03)  # 至少3%行宽
+            max_w = text_width // 2          # 不超过行宽一半
+            underline_w = max(min_w, min(underline_w, max_w))
             x_end = min(x_start + underline_w, text_right + 10)
 
             # 同一行多个错误时上下错开
@@ -365,12 +417,13 @@ async def grade_essay(files: List[UploadFile] = File(...)):
                 continue
 
             # Step 2: 根据 OCR 文本行数优化行检测
-            ocr_line_count = len([l for l in ocr_text.strip().split("\n") if l.strip()])
+            ocr_lines_raw = [l for l in ocr_text.strip().split("\n") if l.strip()]
+            ocr_line_count = len(ocr_lines_raw)
             text_lines = detect_text_lines(image, expected_count=ocr_line_count)
             print(f"Detected {len(text_lines)} essay lines (expected {ocr_line_count}): {text_lines[:15]}")
 
             all_errors.extend(errors)
-            annotated = annotate_image(image, errors, text_lines)
+            annotated = annotate_image(image, errors, text_lines, ocr_lines=ocr_lines_raw)
             buf = io.BytesIO()
             annotated.save(buf, format="JPEG", quality=85, optimize=True)
 
@@ -395,7 +448,7 @@ async def grade_essay(files: List[UploadFile] = File(...)):
 
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "version": "v11-line-fix"}
+    return {"status": "ok", "version": "v13-ocr-x"}
 
 
 @app.get("/")
