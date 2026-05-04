@@ -332,9 +332,9 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
                 draw.line([(x_start, line_y + dy), (x_end, line_y + dy)], fill=color, width=1)
             draw.ellipse([x_start - 3, line_y - 1, x_start + 5, line_y + 5], fill=color)
 
-            # 修正标签
+            # 修正标签：显示 "原词 → 正确答案"
             if correction:
-                label = f"→ {correction[:20]}"
+                label = f"{error_text} → {correction[:15]}"
                 lbox = draw.textbbox((0, 0), label, font=font_small)
                 lw = lbox[2] - lbox[0]
                 lh = lbox[3] - lbox[1]
