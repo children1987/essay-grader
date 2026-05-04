@@ -37,6 +37,7 @@ ERROR_COLORS = {
     "grammar": (220, 40, 40),
     "punctuation": (0, 120, 200),
     "style": (40, 160, 60),
+    "translation": (180, 0, 180),
 }
 
 
@@ -284,6 +285,72 @@ Rules:
         return {"text": "", "errors": []}
 
 
+def mimo_analyze_translation(image: Image.Image) -> dict:
+    """分析中英文互译答卷，找出翻译错误"""
+    img_b64 = image_to_base64(image)
+
+    prompt = """这是一份英语词汇测试答卷，包含两种题型：
+- 英译汉：给出英文单词，考生填写中文翻译
+- 汉译英：给出中文词语，考生填写英文翻译
+
+请逐题检查考生的翻译是否正确。
+
+判断标准：
+- 英译汉：考生写的中文是否准确对应英文单词的含义
+- 汉译英：考生写的英文是否准确对应中文词语的含义
+- 未作答的题目不需要标记
+- 翻译完全正确的不需要标记
+- 部分正确但有错误的，标记错误部分
+- 拼写小瑕疵（如少写一个字母）如果导致意思不对就算错误，如果意思明确就不算
+
+Output strict JSON only:
+{"text":"全文OCR内容，每题一行，格式如：1. competent 有能力的","errors":[{"error":"考生填的错误答案","correction":"正确答案","category":"translation","message":"中文解释为什么错（如：approve意为批准，不是提高）","line":5,"x_pct":60}]}
+
+Rules:
+- "error" = 考生填写的错误内容（尽量简短）
+- "correction" = 正确的翻译
+- line = 1-based 行号（从答卷正文第一行开始数，跳过标题和姓名）
+- x_pct = 错误内容在该行中的水平位置 (0=最左, 100=最右)
+- 对于英译汉，x_pct 应指向考生写的中文答案的位置
+- 对于汉译英，x_pct 应指向考生写的英文答案的位置
+- 如果没有错误，返回 {"text":"...","errors":[]}
+- Output ONLY JSON"""
+
+    payload = {
+        "model": MIMO_MODEL,
+        "messages": [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+            {"type": "text", "text": prompt}
+        ]}],
+        "max_tokens": 3000,
+        "temperature": 0.1,
+        "thinking": {"type": "disabled"},
+    }
+
+    try:
+        resp = requests.post(MIMO_API_URL,
+            headers={"Authorization": f"Bearer {MIMO_API_KEY}", "Content-Type": "application/json"},
+            json=payload, timeout=120)
+        resp.raise_for_status()
+        content = resp.json()["choices"][0]["message"]["content"].strip()
+
+        if not content:
+            reasoning = resp.json()["choices"][0]["message"].get("reasoning_content", "")
+            m = re.search(r'\{[\s\S]*"text"\s*:\s*"[\s\S]*\}\s*\}\s*\]', reasoning)
+            if m:
+                content = m.group(0)
+
+        if content.startswith("```"):
+            content = re.sub(r'^```\w*\n?', '', content)
+            content = re.sub(r'\n?```$', '', content)
+
+        return json.loads(content.strip())
+    except Exception as e:
+        print(f"MiMo translation error: {e}")
+        traceback.print_exc()
+        return {"text": "", "errors": []}
+
+
 # ========== 标注 ==========
 
 def annotate_image(image: Image.Image, errors: list, text_lines: list, ocr_lines: list = None) -> Image.Image:
@@ -446,9 +513,65 @@ async def grade_essay(files: List[UploadFile] = File(...)):
         "summary": {"total_errors": len(all_errors), "categories": categories}})
 
 
+@app.post("/api/check-translation")
+async def check_translation(files: List[UploadFile] = File(...)):
+    """中英文互译查错"""
+    if len(files) > 2:
+        raise HTTPException(status_code=400, detail="最多只能上传2张图片")
+
+    results = []
+    all_errors = []
+
+    for file in files:
+        try:
+            contents = await file.read()
+            image = Image.open(io.BytesIO(contents))
+            image = resize_image(image)
+
+            result = mimo_analyze_translation(image)
+            ocr_text = result.get("text", "")
+            errors = result.get("errors", [])
+            print(f"Translation check found {len(errors)} errors")
+            for e in errors:
+                print(f"  - line {e.get('line')}: '{e.get('error')}' -> '{e.get('correction')}' x={e.get('x_pct')}")
+
+            if not ocr_text.strip():
+                results.append({"original_text": "", "errors": [],
+                    "annotated_image": base64.b64encode(contents).decode("utf-8")})
+                continue
+
+            ocr_lines_raw = [l for l in ocr_text.strip().split("\n") if l.strip()]
+            ocr_line_count = len(ocr_lines_raw)
+            text_lines = detect_text_lines(image, expected_count=ocr_line_count)
+            print(f"Detected {len(text_lines)} lines (expected {ocr_line_count}): {text_lines[:15]}")
+
+            all_errors.extend(errors)
+            annotated = annotate_image(image, errors, text_lines, ocr_lines=ocr_lines_raw)
+            buf = io.BytesIO()
+            annotated.save(buf, format="JPEG", quality=85, optimize=True)
+
+            results.append({
+                "original_text": ocr_text, "errors": errors,
+                "annotated_image": base64.b64encode(buf.getvalue()).decode("utf-8")
+            })
+        except Exception as e:
+            print(f"Translation check error: {e}")
+            traceback.print_exc()
+            results.append({"original_text": "", "errors": [],
+                "annotated_image": base64.b64encode(contents).decode("utf-8")})
+
+    categories = {}
+    for error in all_errors:
+        cat = error.get("category", "translation")
+        categories[cat] = categories.get(cat, 0) + 1
+
+    return JSONResponse({"results": results,
+        "summary": {"total_errors": len(all_errors), "categories": categories}})
+
+
 @app.get("/api/health")
 async def health_check():
-    return {"status": "ok", "version": "v13-ocr-x"}
+    return {"status": "ok", "version": "v14-translation"}
 
 
 @app.get("/")

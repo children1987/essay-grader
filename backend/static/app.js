@@ -69,6 +69,26 @@ debugLogEl.style.display = "none"; // 默认折叠
 
 // ===== 状态 =====
 let selectedFiles = [];
+let currentMode = "essay"; // "essay" or "translation"
+
+const MODE_CONFIG = {
+    essay: { title: "📝 英语作文批改", subtitle: "拍照或从相册选择，智能标注语法错误", api: "/api/grade" },
+    translation: { title: "🔄 中英文互译查错", subtitle: "拍照或从相册选择，检查翻译正误", api: "/api/check-translation" },
+};
+
+// ===== 模式切换 =====
+document.querySelectorAll(".mode-tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+        const mode = tab.dataset.mode;
+        if (mode === currentMode) return;
+        currentMode = mode;
+        document.querySelectorAll(".mode-tab").forEach(t => t.classList.remove("active"));
+        tab.classList.add("active");
+        document.getElementById("app-title").textContent = MODE_CONFIG[mode].title;
+        document.getElementById("app-subtitle").textContent = MODE_CONFIG[mode].subtitle;
+        debugLog("info", "切换模式: " + mode);
+    });
+});
 
 // ===== 事件绑定 =====
 cameraBtn.addEventListener("click", () => cameraInput.click());
@@ -165,8 +185,8 @@ async function handleSubmit() {
     btnLoading.classList.remove("hidden");
     submitBtn.disabled = true;
     
-    const url = API_BASE + "/api/grade";
-    debugLog("info", "开始批改, 文件数: " + selectedFiles.length);
+    const url = API_BASE + MODE_CONFIG[currentMode].api;
+    debugLog("info", "开始批改, 文件数: " + selectedFiles.length + ", 模式: " + currentMode);
     debugLog("info", "请求地址: POST " + url);
     
     try {
