@@ -57,56 +57,26 @@ def image_to_base64(image: Image.Image, quality: int = 70) -> str:
 
 
 def _load_fonts():
-    # 优先加载中文字体（文泉驿），DejaVu 做 fallback
-    cjk_paths = [
+    """加载字体，优先使用项目内捆绑的中文字体"""
+    font_paths = [
+        os.path.join(os.path.dirname(__file__), "fonts", "wqy-zenhei.ttc"),
         "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-        "/usr/share/fonts/truetype/wqy/WenQuanYi Zen Hei.ttc",
-    ]
-    fallback_paths = [
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     ]
-    cjk_font = None
-    for p in cjk_paths:
+    font16 = font13 = None
+    for p in font_paths:
         if os.path.exists(p):
             try:
-                cjk_font = ImageFont.truetype(p, 16)
+                font16 = ImageFont.truetype(p, 16)
+                font13 = ImageFont.truetype(p, 13)
                 break
             except Exception:
                 pass
-    if not cjk_font:
-        for p in fallback_paths:
-            if os.path.exists(p):
-                try:
-                    cjk_font = ImageFont.truetype(p, 16)
-                    break
-                except Exception:
-                    pass
-    if not cjk_font:
-        cjk_font = ImageFont.load_default()
-
-    # 小号字体
-    small_font = None
-    for p in cjk_paths:
-        if os.path.exists(p):
-            try:
-                small_font = ImageFont.truetype(p, 13)
-                break
-            except Exception:
-                pass
-    if not small_font:
-        for p in fallback_paths:
-            if os.path.exists(p):
-                try:
-                    small_font = ImageFont.truetype(p, 13)
-                    break
-                except Exception:
-                    pass
-    if not small_font:
-        small_font = cjk_font
-
-    tag_font = cjk_font  # tag 用同号字体
-    return cjk_font, small_font, tag_font
+    if not font16:
+        font16 = ImageFont.load_default()
+        font13 = font16
+    return font16, font13, font16
 
 
 # ========== 行检测 ==========
@@ -276,7 +246,7 @@ def compute_x_from_ocr(error_text: str, ocr_line: str) -> tuple:
 # ========== 网格布局标注（翻译查错用）==========
 
 def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
-    """网格布局标注：直接用 y_pct/x_pct 定位，不依赖行检测"""
+    """网格布局标注：根据题号计算精确位置"""
     if not errors:
         print("  annotate_grid: no errors, returning original")
         return image
@@ -288,23 +258,59 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
         width, height = annotated.size
         print(f"  annotate_grid: image {width}x{height}, {len(errors)} errors")
 
-        used_positions = {}  # 同一位置多个标注时错开
+        # ===== 网格布局参数（基于试卷结构）=====
+        # 英译汉区域：y 约 7%~68%，分3列
+        en_cn_y_start = 0.07
+        en_cn_y_end = 0.68
+        en_cn_cols = [0.12, 0.40, 0.70]  # 3列的 x 起始位置（中文答案的 x 位置）
+        items_per_col = [27, 26, 27]  # 每列题数：1-27, 28-53, 54-80
+
+        # 汉译英区域：y 约 72%~95%，1列
+        cn_en_y_start = 0.72
+        cn_en_y_end = 0.95
+        cn_en_x = 0.40  # 英文答案的 x 位置
+
+        used_positions = {}
 
         for error in errors:
             error_text = error.get("error", "")
             cat = error.get("category", "translation")
-            y_pct = error.get("y_pct", 50)
-            x_pct = error.get("x_pct", 50)
+            item_num = error.get("item", 0)
             correction = error.get("correction", "")
             color = ERROR_COLORS.get(cat, (128, 128, 128))
 
-            print(f"  annotate_grid: error='{error_text}' y_pct={y_pct} x_pct={x_pct} color={color}")
+            if item_num <= 0:
+                print(f"  ✗ '{error_text}' -> no item number, skip")
+                continue
 
-            # 直接用百分比映射到像素坐标
-            y = int(height * y_pct / 100)
-            x_start = int(width * x_pct / 100)
+            # 根据题号计算像素坐标
+            if item_num <= 80:
+                # 英译汉
+                if item_num <= 27:
+                    col_idx = 0
+                    row_in_col = item_num - 1
+                elif item_num <= 53:
+                    col_idx = 1
+                    row_in_col = item_num - 28
+                else:
+                    col_idx = 2
+                    row_in_col = item_num - 54
 
-            # 下划线宽度：基于错误文本长度估算
+                col_items = items_per_col[col_idx]
+                y_pct = en_cn_y_start + (en_cn_y_end - en_cn_y_start) * (row_in_col + 0.5) / col_items
+                x_pct = en_cn_cols[col_idx]
+                # 错误内容在中文答案区域（列位置 + 偏移一点）
+                x_pct += 0.08  # 答案在题号右边
+            else:
+                # 汉译英（题号 81-100 对应第 1-20 题）
+                cn_item = item_num - 80
+                y_pct = cn_en_y_start + (cn_en_y_end - cn_en_y_start) * (cn_item - 0.5) / 20
+                x_pct = cn_en_x + 0.10  # 英文答案在中文右边
+
+            y = int(height * y_pct)
+            x_start = int(width * x_pct)
+
+            # 下划线宽度
             text_len = len(error_text)
             is_chinese = any('\u4e00' <= c <= '\u9fff' for c in error_text)
             char_w = 14 if is_chinese else 8
@@ -313,19 +319,17 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
             x_end = min(x_start + underline_w, width - 10)
             x_start = max(5, x_start)
 
-            # 同一位置多个标注时上下错开
+            # 同一位置错开
             pos_key = (y // 20, x_start // 50)
             offset = used_positions.get(pos_key, 0)
             if offset > 0:
                 y += offset * 18
             used_positions[pos_key] = offset + 1
 
-            # 3px 粗横线
+            # 画标注
             line_y = y + 14
             for dy in range(3):
                 draw.line([(x_start, line_y + dy), (x_end, line_y + dy)], fill=color, width=1)
-
-            # 左端小圆点
             draw.ellipse([x_start - 3, line_y - 1, x_start + 5, line_y + 5], fill=color)
 
             # 修正标签
@@ -344,9 +348,9 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
                 )
                 draw.text((lx, ly), label, fill=color, font=font_small)
 
-            print(f"  ✓ grid '{error_text}' -> y={y}px ({y_pct}%), x={x_start}-{x_end}px ({x_pct}%)")
+            print(f"  ✓ item#{item_num} '{error_text}' -> y={y}px ({y_pct*100:.0f}%), x={x_start}-{x_end}px ({x_pct*100:.0f}%)")
 
-        print(f"  annotate_grid: done, returning annotated image")
+        print(f"  annotate_grid: done")
         return annotated
     except Exception as e:
         print(f"annotate_grid FAILED: {e}")
@@ -423,19 +427,14 @@ def mimo_analyze_translation(image: Image.Image) -> dict:
 - 未作答的题目不需要标记
 - 翻译完全正确的不需要标记
 - 部分正确但有错误的，标记错误部分
-- 拼写小瑕疵（如少写一个字母）如果导致意思不对就算错误，如果意思明确就不算
 
 Output strict JSON only:
-{"text":"全文OCR内容，每题一行","errors":[{"error":"错误答案","correction":"正确答案","category":"translation","message":"中文解释","y_pct":15,"x_pct":25}]}
+{"text":"全文OCR内容","errors":[{"item":5,"error":"提高","correction":"批准/赞成","category":"translation","message":"approve意为批准、赞成"}]}
 
 Rules:
+- "item" = 题号（英译汉1-80，汉译英用81-100表示第1-20题）——非常重要，必须准确！
 - "error" = 考生填写的错误内容（尽量简短）
 - "correction" = 正确的翻译
-- y_pct = 错误内容在图片中的垂直百分比 (0=顶部, 100=底部)。必须根据题目在页面中的实际位置估算！
-  英译汉区域大约在图片 y=8%~70% 的范围，汉译英区域大约在 y=72%~95%
-- x_pct = 错误内容在图片中的水平百分比 (0=左边, 100=右边)。必须根据题目所在列估算！
-  英译汉左列(x≈12~28) 中列(x≈38~55) 右列(x≈68~85)
-  汉译英(x≈15~30为中文题目, x≈35~55为英文答案)
 - 如果没有错误，返回 {"text":"...","errors":[]}
 - Output ONLY JSON"""
 
