@@ -259,16 +259,16 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
         print(f"  annotate_grid: image {width}x{height}, {len(errors)} errors")
 
         # ===== 网格布局参数（基于试卷结构）=====
-        # 英译汉区域：y 约 7%~68%，分3列
-        en_cn_y_start = 0.07
-        en_cn_y_end = 0.68
+        # 英译汉区域：分3列
+        en_cn_y_start = 0.05
+        en_cn_y_end = 0.75
         en_cn_cols = [0.12, 0.40, 0.70]  # 3列的 x 起始位置
         # 实际列分布：左列1-37(37题) 中列38-76(39题) 右列77-80(4题)
         items_per_col = [37, 39, 4]
 
-        # 汉译英区域：y 约 72%~95%，1列
-        cn_en_y_start = 0.72
-        cn_en_y_end = 0.95
+        # 汉译英区域：1列
+        cn_en_y_start = 0.76
+        cn_en_y_end = 0.97
         cn_en_x = 0.40  # 英文答案的 x 位置
 
         used_positions = {}
