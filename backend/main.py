@@ -237,6 +237,7 @@ def compute_x_from_ocr(error_text: str, ocr_line: str) -> tuple:
 def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
     """网格布局标注：直接用 y_pct/x_pct 定位，不依赖行检测"""
     if not errors:
+        print("  annotate_grid: no errors, returning original")
         return image
 
     try:
@@ -244,6 +245,7 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
         draw = ImageDraw.Draw(annotated)
         font_label, font_small, font_tag = _load_fonts()
         width, height = annotated.size
+        print(f"  annotate_grid: image {width}x{height}, {len(errors)} errors")
 
         used_positions = {}  # 同一位置多个标注时错开
 
@@ -255,12 +257,13 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
             correction = error.get("correction", "")
             color = ERROR_COLORS.get(cat, (128, 128, 128))
 
+            print(f"  annotate_grid: error='{error_text}' y_pct={y_pct} x_pct={x_pct} color={color}")
+
             # 直接用百分比映射到像素坐标
             y = int(height * y_pct / 100)
             x_start = int(width * x_pct / 100)
 
             # 下划线宽度：基于错误文本长度估算
-            # 中文约14px/字，英文约8px/字
             text_len = len(error_text)
             is_chinese = any('\u4e00' <= c <= '\u9fff' for c in error_text)
             char_w = 14 if is_chinese else 8
@@ -302,9 +305,10 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
 
             print(f"  ✓ grid '{error_text}' -> y={y}px ({y_pct}%), x={x_start}-{x_end}px ({x_pct}%)")
 
+        print(f"  annotate_grid: done, returning annotated image")
         return annotated
     except Exception as e:
-        print(f"annotate_grid failed: {e}")
+        print(f"annotate_grid FAILED: {e}")
         traceback.print_exc()
         return image
 
