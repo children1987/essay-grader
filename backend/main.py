@@ -232,6 +232,83 @@ def compute_x_from_ocr(error_text: str, ocr_line: str) -> tuple:
     return (None, None)  # 表示未匹配，fallback到MiMo x_pct
 
 
+# ========== 网格布局标注（翻译查错用）==========
+
+def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
+    """网格布局标注：直接用 y_pct/x_pct 定位，不依赖行检测"""
+    if not errors:
+        return image
+
+    try:
+        annotated = image.copy().convert("RGB")
+        draw = ImageDraw.Draw(annotated)
+        font_label, font_small, font_tag = _load_fonts()
+        width, height = annotated.size
+
+        used_positions = {}  # 同一位置多个标注时错开
+
+        for error in errors:
+            error_text = error.get("error", "")
+            cat = error.get("category", "translation")
+            y_pct = error.get("y_pct", 50)
+            x_pct = error.get("x_pct", 50)
+            correction = error.get("correction", "")
+            color = ERROR_COLORS.get(cat, (128, 128, 128))
+
+            # 直接用百分比映射到像素坐标
+            y = int(height * y_pct / 100)
+            x_start = int(width * x_pct / 100)
+
+            # 下划线宽度：基于错误文本长度估算
+            # 中文约14px/字，英文约8px/字
+            text_len = len(error_text)
+            is_chinese = any('\u4e00' <= c <= '\u9fff' for c in error_text)
+            char_w = 14 if is_chinese else 8
+            underline_w = max(40, min(text_len * char_w + 20, int(width * 0.15)))
+
+            x_end = min(x_start + underline_w, width - 10)
+            x_start = max(5, x_start)
+
+            # 同一位置多个标注时上下错开
+            pos_key = (y // 20, x_start // 50)
+            offset = used_positions.get(pos_key, 0)
+            if offset > 0:
+                y += offset * 18
+            used_positions[pos_key] = offset + 1
+
+            # 3px 粗横线
+            line_y = y + 14
+            for dy in range(3):
+                draw.line([(x_start, line_y + dy), (x_end, line_y + dy)], fill=color, width=1)
+
+            # 左端小圆点
+            draw.ellipse([x_start - 3, line_y - 1, x_start + 5, line_y + 5], fill=color)
+
+            # 修正标签
+            if correction:
+                label = f"→ {correction[:20]}"
+                lbox = draw.textbbox((0, 0), label, font=font_small)
+                lw = lbox[2] - lbox[0]
+                lh = lbox[3] - lbox[1]
+                lx = x_end + 6
+                ly = line_y - lh // 2
+                if lx + lw > width - 10:
+                    lx = x_start - lw - 6
+                draw.rounded_rectangle(
+                    [lx - 3, ly - 2, lx + lw + 3, ly + lh + 2],
+                    radius=4, fill=(255, 255, 255), outline=color, width=1
+                )
+                draw.text((lx, ly), label, fill=color, font=font_small)
+
+            print(f"  ✓ grid '{error_text}' -> y={y}px ({y_pct}%), x={x_start}-{x_end}px ({x_pct}%)")
+
+        return annotated
+    except Exception as e:
+        print(f"annotate_grid failed: {e}")
+        traceback.print_exc()
+        return image
+
+
 # ========== MiMo ==========
 
 def mimo_analyze_essay(image: Image.Image) -> dict:
@@ -304,15 +381,13 @@ def mimo_analyze_translation(image: Image.Image) -> dict:
 - 拼写小瑕疵（如少写一个字母）如果导致意思不对就算错误，如果意思明确就不算
 
 Output strict JSON only:
-{"text":"全文OCR内容，每题一行，格式如：1. competent 有能力的","errors":[{"error":"考生填的错误答案","correction":"正确答案","category":"translation","message":"中文解释为什么错（如：approve意为批准，不是提高）","line":5,"x_pct":60}]}
+{"text":"全文OCR内容，每题一行，格式如：1. competent 有能力的","errors":[{"error":"考生填的错误答案","correction":"正确答案","category":"translation","message":"中文解释为什么错（如：approve意为批准，不是提高）","y_pct":15,"x_pct":60}]}
 
 Rules:
 - "error" = 考生填写的错误内容（尽量简短）
 - "correction" = 正确的翻译
-- line = 1-based 行号（从答卷正文第一行开始数，跳过标题和姓名）
-- x_pct = 错误内容在该行中的水平位置 (0=最左, 100=最右)
-- 对于英译汉，x_pct 应指向考生写的中文答案的位置
-- 对于汉译英，x_pct 应指向考生写的英文答案的位置
+- y_pct = 错误内容在图片中的垂直位置 (0=最顶部, 100=最底部)。很重要！必须估算错误内容在整张图片中的纵向百分比位置
+- x_pct = 错误内容在该行中的水平位置 (0=最左, 100=最右)。三列布局时：左列约10-30，中列约35-65，右列约70-90
 - 如果没有错误，返回 {"text":"...","errors":[]}
 - Output ONLY JSON"""
 
@@ -540,13 +615,9 @@ async def check_translation(files: List[UploadFile] = File(...)):
                     "annotated_image": base64.b64encode(contents).decode("utf-8")})
                 continue
 
-            ocr_lines_raw = [l for l in ocr_text.strip().split("\n") if l.strip()]
-            ocr_line_count = len(ocr_lines_raw)
-            text_lines = detect_text_lines(image, expected_count=ocr_line_count)
-            print(f"Detected {len(text_lines)} lines (expected {ocr_line_count}): {text_lines[:15]}")
-
             all_errors.extend(errors)
-            annotated = annotate_image(image, errors, text_lines, ocr_lines=ocr_lines_raw)
+            # 网格布局用 y_pct/x_pct 直接定位，不依赖行检测
+            annotated = annotate_image_grid(image, errors)
             buf = io.BytesIO()
             annotated.save(buf, format="JPEG", quality=85, optimize=True)
 
