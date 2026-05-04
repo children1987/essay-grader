@@ -57,15 +57,56 @@ def image_to_base64(image: Image.Image, quality: int = 70) -> str:
 
 
 def _load_fonts():
-    for p in ["/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-              "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]:
+    # 优先加载中文字体（文泉驿），DejaVu 做 fallback
+    cjk_paths = [
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/truetype/wqy/WenQuanYi Zen Hei.ttc",
+    ]
+    fallback_paths = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    cjk_font = None
+    for p in cjk_paths:
         if os.path.exists(p):
             try:
-                return (ImageFont.truetype(p, 16), ImageFont.truetype(p, 13), ImageFont.truetype(p, 14))
+                cjk_font = ImageFont.truetype(p, 16)
+                break
             except Exception:
                 pass
-    f = ImageFont.load_default()
-    return f, f, f
+    if not cjk_font:
+        for p in fallback_paths:
+            if os.path.exists(p):
+                try:
+                    cjk_font = ImageFont.truetype(p, 16)
+                    break
+                except Exception:
+                    pass
+    if not cjk_font:
+        cjk_font = ImageFont.load_default()
+
+    # 小号字体
+    small_font = None
+    for p in cjk_paths:
+        if os.path.exists(p):
+            try:
+                small_font = ImageFont.truetype(p, 13)
+                break
+            except Exception:
+                pass
+    if not small_font:
+        for p in fallback_paths:
+            if os.path.exists(p):
+                try:
+                    small_font = ImageFont.truetype(p, 13)
+                    break
+                except Exception:
+                    pass
+    if not small_font:
+        small_font = cjk_font
+
+    tag_font = cjk_font  # tag 用同号字体
+    return cjk_font, small_font, tag_font
 
 
 # ========== 行检测 ==========
@@ -371,8 +412,8 @@ def mimo_analyze_translation(image: Image.Image) -> dict:
     img_b64 = image_to_base64(image)
 
     prompt = """这是一份英语词汇测试答卷，包含两种题型：
-- 英译汉：给出英文单词，考生填写中文翻译
-- 汉译英：给出中文词语，考生填写英文翻译
+- 英译汉：给出英文单词，考生填写中文翻译（80题，分3列排列：左列1-27，中列28-53，右列54-80）
+- 汉译英：给出中文词语，考生填写英文翻译（20题，1列排列，在页面底部）
 
 请逐题检查考生的翻译是否正确。
 
@@ -385,13 +426,16 @@ def mimo_analyze_translation(image: Image.Image) -> dict:
 - 拼写小瑕疵（如少写一个字母）如果导致意思不对就算错误，如果意思明确就不算
 
 Output strict JSON only:
-{"text":"全文OCR内容，每题一行，格式如：1. competent 有能力的","errors":[{"error":"考生填的错误答案","correction":"正确答案","category":"translation","message":"中文解释为什么错（如：approve意为批准，不是提高）","y_pct":15,"x_pct":60}]}
+{"text":"全文OCR内容，每题一行","errors":[{"error":"错误答案","correction":"正确答案","category":"translation","message":"中文解释","y_pct":15,"x_pct":25}]}
 
 Rules:
 - "error" = 考生填写的错误内容（尽量简短）
 - "correction" = 正确的翻译
-- y_pct = 错误内容在图片中的垂直位置 (0=最顶部, 100=最底部)。很重要！必须估算错误内容在整张图片中的纵向百分比位置
-- x_pct = 错误内容在该行中的水平位置 (0=最左, 100=最右)。三列布局时：左列约10-30，中列约35-65，右列约70-90
+- y_pct = 错误内容在图片中的垂直百分比 (0=顶部, 100=底部)。必须根据题目在页面中的实际位置估算！
+  英译汉区域大约在图片 y=8%~70% 的范围，汉译英区域大约在 y=72%~95%
+- x_pct = 错误内容在图片中的水平百分比 (0=左边, 100=右边)。必须根据题目所在列估算！
+  英译汉左列(x≈12~28) 中列(x≈38~55) 右列(x≈68~85)
+  汉译英(x≈15~30为中文题目, x≈35~55为英文答案)
 - 如果没有错误，返回 {"text":"...","errors":[]}
 - Output ONLY JSON"""
 
