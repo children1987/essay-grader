@@ -1,10 +1,11 @@
 FROM python:3.11-slim
 
-# 安装系统依赖
+# 安装系统依赖（含中文字体）
 RUN apt-get update && apt-get install -y \
     tesseract-ocr \
     tesseract-ocr-eng \
     fonts-dejavu-core \
+    fonts-wqy-zenhei \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
