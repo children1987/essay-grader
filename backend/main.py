@@ -262,8 +262,9 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
         # 英译汉区域：y 约 7%~68%，分3列
         en_cn_y_start = 0.07
         en_cn_y_end = 0.68
-        en_cn_cols = [0.12, 0.40, 0.70]  # 3列的 x 起始位置（中文答案的 x 位置）
-        items_per_col = [27, 26, 27]  # 每列题数：1-27, 28-53, 54-80
+        en_cn_cols = [0.12, 0.40, 0.70]  # 3列的 x 起始位置
+        # 实际列分布：左列1-37(37题) 中列38-76(39题) 右列77-80(4题)
+        items_per_col = [37, 39, 4]
 
         # 汉译英区域：y 约 72%~95%，1列
         cn_en_y_start = 0.72
@@ -285,16 +286,16 @@ def annotate_image_grid(image: Image.Image, errors: list) -> Image.Image:
 
             # 根据题号计算像素坐标
             if item_num <= 80:
-                # 英译汉
-                if item_num <= 27:
+                # 英译汉：左列1-37 中列38-76 右列77-80
+                if item_num <= 37:
                     col_idx = 0
                     row_in_col = item_num - 1
-                elif item_num <= 53:
+                elif item_num <= 76:
                     col_idx = 1
-                    row_in_col = item_num - 28
+                    row_in_col = item_num - 38
                 else:
                     col_idx = 2
-                    row_in_col = item_num - 54
+                    row_in_col = item_num - 77
 
                 col_items = items_per_col[col_idx]
                 y_pct = en_cn_y_start + (en_cn_y_end - en_cn_y_start) * (row_in_col + 0.5) / col_items
