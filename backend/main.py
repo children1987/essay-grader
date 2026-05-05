@@ -215,40 +215,57 @@ def build_char_map(ocr_lines):
     return full_text, char_coords
 
 
-def map_errors_to_coords(errors, full_text, char_coords):
-    """Map errors to coordinates. Adjusts offset for newlines not in char_coords."""
-    # Count newline positions (MiMo sees them, but char_coords doesn't)
-    nl_positions = [i for i, c in enumerate(full_text) if c == '\n']
+def map_errors_to_coords(errors, full_text, ocr_lines):
+    """Map errors to coordinates using line-level bbox + character offset within line."""
+    lines = full_text.split('\n')
 
     mapped = []
     for error in errors:
-        offset = error["offset"]
-        length = error["length"]
-
-        # Adjust offset: char_coords doesn't have \n, so subtract newlines before offset
-        nl_before = sum(1 for p in nl_positions if p < offset)
-        adjusted_offset = offset - nl_before
-        adjusted_length = min(length, len(char_coords) - adjusted_offset)
-
-        if adjusted_offset < 0 or adjusted_length <= 0:
+        line_num = error.get("line", 0)
+        if not line_num or line_num < 1 or line_num > len(ocr_lines):
             continue
 
-        char_bboxes = []
-        for i in range(adjusted_offset, min(adjusted_offset + adjusted_length, len(char_coords))):
-            cc = char_coords[i]
-            if cc["bbox"] is not None:
-                char_bboxes.append(cc["bbox"])
-        if not char_bboxes:
+        ocr_line = ocr_lines[line_num - 1]
+        line_bbox = ocr_line["bbox"]  # {left, top, width, height}
+        line_text = ocr_line["text"]
+
+        # Find error within this OCR line
+        error_phrase = error.get("error_text", "").strip()
+        if not error_phrase:
             continue
-        left = min(b["left"] for b in char_bboxes)
-        top = min(b["top"] for b in char_bboxes)
-        right = max(b["left"] + b["width"] for b in char_bboxes)
-        bottom = max(b["top"] + b["height"] for b in char_bboxes)
-        error_text = full_text[offset:offset+length].strip()
+
+        idx = line_text.lower().find(error_phrase.lower())
+        if idx < 0:
+            words = error_phrase.split()
+            for n in range(min(3, len(words)), 0, -1):
+                phrase = ' '.join(words[:n])
+                idx = line_text.lower().find(phrase.lower())
+                if idx >= 0:
+                    break
+        if idx < 0:
+            continue
+
+        # Calculate x position as proportion of line width
+        char_count = len(line_text)
+        if char_count == 0:
+            continue
+
+        x_start = line_bbox["left"] + int(line_bbox["width"] * idx / char_count)
+        x_end = line_bbox["left"] + int(line_bbox["width"] * (idx + len(error_phrase)) / char_count)
+        y_top = line_bbox["top"]
+        y_height = line_bbox["height"]
+
+        error_text = line_text[idx:idx+len(error_phrase)]
+
         mapped.append({
             **error,
             "error_text": error_text,
-            "word_bbox": {"left": left, "top": top, "width": right - left, "height": bottom - top},
+            "word_bbox": {
+                "left": x_start,
+                "top": y_top,
+                "width": x_end - x_start,
+                "height": y_height,
+            },
         })
     return mapped
 
@@ -331,7 +348,7 @@ async def grade_essay(files: List[UploadFile] = File(...)):
         all_errors.extend(errors)
 
         # 4. Map to coordinates + annotate
-        mapped_errors = map_errors_to_coords(errors, full_text, char_coords)
+        mapped_errors = map_errors_to_coords(errors, full_text, ocr_lines)
         annotated = annotate_image(image, mapped_errors)
 
         buffer = io.BytesIO()
