@@ -202,12 +202,25 @@ def build_char_map(ocr_lines):
 
 
 def map_errors_to_coords(errors, full_text, char_coords):
+    """Map errors to coordinates. Adjusts offset for newlines not in char_coords."""
+    # Count newline positions (MiMo sees them, but char_coords doesn't)
+    nl_positions = [i for i, c in enumerate(full_text) if c == '\n']
+
     mapped = []
     for error in errors:
         offset = error["offset"]
         length = error["length"]
+
+        # Adjust offset: char_coords doesn't have \n, so subtract newlines before offset
+        nl_before = sum(1 for p in nl_positions if p < offset)
+        adjusted_offset = offset - nl_before
+        adjusted_length = min(length, len(char_coords) - adjusted_offset)
+
+        if adjusted_offset < 0 or adjusted_length <= 0:
+            continue
+
         char_bboxes = []
-        for i in range(offset, min(offset + length, len(char_coords))):
+        for i in range(adjusted_offset, min(adjusted_offset + adjusted_length, len(char_coords))):
             cc = char_coords[i]
             if cc["bbox"] is not None:
                 char_bboxes.append(cc["bbox"])
