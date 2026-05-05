@@ -93,6 +93,36 @@ document.querySelectorAll(".mode-tab").forEach(tab => {
 // ===== 事件绑定 =====
 cameraBtn.addEventListener("click", () => cameraInput.click());
 galleryBtn.addEventListener("click", () => galleryInput.click());
+// ===== 图片压缩（Canvas API）=====
+async function compressImage(file, maxWidth = 1600, quality = 0.7) {
+    return new Promise((resolve) => {
+        if (!file.type.startsWith("image/") || file.size < 500 * 1024) {
+            resolve(file); // 小于500KB不压缩
+            return;
+        }
+        const img = new Image();
+        img.onload = () => {
+            let w = img.width, h = img.height;
+            if (w > maxWidth || h > maxWidth) {
+                const ratio = Math.min(maxWidth / w, maxWidth / h);
+                w = Math.round(w * ratio);
+                h = Math.round(h * ratio);
+            }
+            const canvas = document.createElement("canvas");
+            canvas.width = w;
+            canvas.height = h;
+            const ctx = canvas.getContext("2d");
+            ctx.drawImage(img, 0, 0, w, h);
+            canvas.toBlob((blob) => {
+                const compressed = new File([blob], file.name, { type: "image/jpeg" });
+                debugLog("info", "压缩图片: " + (file.size/1024).toFixed(0) + "KB -> " + (compressed.size/1024).toFixed(0) + "KB");
+                resolve(compressed);
+            }, "image/jpeg", quality);
+        };
+        img.src = URL.createObjectURL(file);
+    });
+}
+
 cameraInput.addEventListener("change", handleFileSelect);
 galleryInput.addEventListener("change", handleFileSelect);
 submitBtn.addEventListener("click", handleSubmit);
@@ -122,11 +152,12 @@ function handleFileSelect(e) {
         return;
     }
     
-    files.forEach(file => {
+    for (const file of files) {
         if (file.type.startsWith("image/")) {
-            selectedFiles.push(file);
+            const compressed = await compressImage(file);
+            selectedFiles.push(compressed);
         }
-    });
+    }
     
     updatePreview();
     cameraInput.value = "";
