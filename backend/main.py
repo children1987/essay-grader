@@ -348,7 +348,9 @@ async def grade_essay(files: List[UploadFile] = File(...)):
         all_errors.extend(errors)
 
         # 4. Map to coordinates + annotate
+        print(f"[DEBUG] {len(errors)} errors from MiMo: {[{'line': e.get('line'), 'error': e.get('error_text', e.get('error',''))} for e in errors]}")
         mapped_errors = map_errors_to_coords(errors, full_text, ocr_lines)
+        print(f"[DEBUG] {len(mapped_errors)} errors mapped to coords")
         annotated = annotate_image(image, mapped_errors)
 
         buffer = io.BytesIO()
