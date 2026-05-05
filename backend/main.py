@@ -104,36 +104,22 @@ def baidu_handwriting_ocr(image_bytes):
 # ====== MiMo Grammar Check ======
 
 def check_grammar(text):
+    """MiMo finds errors, we find positions by text matching (offsets from MiMo are unreliable)"""
     if not MIMO_API_KEY:
         return []
-
-    # MiMo's offsets are unreliable with \n, so send text with spaces instead
-    # and map offsets back afterwards
-    text_for_mimo = text.replace('\n', ' ')
-    nl_positions = [i for i, c in enumerate(text) if c == '\n']
-
-    def map_offset(offset, length):
-        """Map MiMo offsets (on space-replaced text) back to original text offsets"""
-        # Count how many newlines appear before this offset in original text
-        adj = sum(1 for p in nl_positions if p < offset)
-        new_offset = offset + adj
-        # Make sure we don't read past the original text
-        return min(new_offset, len(text) - 1), min(length, len(text) - new_offset)
 
     prompt = (
         'Analyze this English text for grammar, spelling, and punctuation errors.\n'
         'Return a JSON array of errors. Each error must have:\n'
-        '- "error": the wrong word/phrase (max 3 words)\n'
-        '- "correction": the corrected version\n'
+        '- "error": ONLY the specific wrong word/phrase (max 3 words). NOT the full sentence.\n'
+        '- "correction": the corrected version of just that word/phrase\n'
         '- "category": one of "spelling", "grammar", "punctuation", "style"\n'
-        '- "message": short Chinese explanation\n'
-        '- "offset": exact character offset in the text (0-based)\n'
-        '- "length": character length of the error\n\n'
+        '- "message": short Chinese explanation\n\n'
         'RULES:\n'
-        '- offset and length MUST be exact positions in the text below\n'
+        '- "error" field MUST be a short phrase (1-3 words) that actually appears in the text\n'
         '- Return ONLY the JSON array, no other text\n'
         '- If no errors, return []\n\n'
-        f'Text:\n{text_for_mimo}'
+        f'Text:\n{text}'
     )
 
     body = json.dumps({
@@ -158,25 +144,39 @@ def check_grammar(text):
             data = json.loads(resp.read())
         content = data["choices"][0]["message"]["content"]
 
-        # Extract JSON array from response
         json_match = re.search(r'\[.*\]', content, re.DOTALL)
         if not json_match:
             return []
         errors_raw = json.loads(json_match.group())
 
+        # Find error positions by text matching (MiMo offsets are unreliable)
+        text_lower = text.lower()
         errors = []
         for e in errors_raw:
-            raw_offset = int(e.get("offset", 0))
-            raw_length = int(e.get("length", 1))
-            offset, length = map_offset(raw_offset, raw_length)
-            if offset < 0 or length <= 0 or offset + length > len(text):
+            error_phrase = e.get("error", "").strip()
+            if not error_phrase:
                 continue
+
+            # Try exact match first
+            idx = text_lower.find(error_phrase.lower())
+            if idx < 0:
+                # Try matching first few words
+                words = error_phrase.split()
+                for n in range(min(3, len(words)), 0, -1):
+                    phrase = ' '.join(words[:n])
+                    idx = text_lower.find(phrase.lower())
+                    if idx >= 0:
+                        break
+            if idx < 0:
+                continue
+
+            length = len(error_phrase)
             errors.append({
                 'message': e.get("message", ""),
                 'replacements': [e.get("correction", "")],
-                'offset': offset,
+                'offset': idx,
                 'length': length,
-                'context': text[max(0, offset-20):offset+length+20],
+                'context': text[max(0, idx-20):idx+length+20],
                 'category': e.get("category", "grammar"),
                 'rule_id': "mimo",
             })
