@@ -143,7 +143,7 @@ backBtn.addEventListener("click", goHome);
 })();
 
 // ===== 处理文件选择 =====
-function handleFileSelect(e) {
+async function handleFileSelect(e) {
     const files = Array.from(e.target.files);
     debugLog("info", "选择文件: " + files.length + " 个", files.map(f => ({ name: f.name, size: f.size, type: f.type })));
     
