@@ -36,6 +36,22 @@ CATEGORY_NAMES = {'spelling': '拼写', 'grammar': '语法', 'punctuation': '标
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
+# ====== Image pre-processing ======
+
+def compress_image(image_bytes, max_size=800):
+    """Compress image to reduce base64 size for Baidu OCR (limit 10MB)"""
+    img = Image.open(io.BytesIO(image_bytes))
+    if img.mode == 'RGBA':
+        img = img.convert('RGB')
+    w, h = img.size
+    if max(w, h) > max_size:
+        ratio = max_size / max(w, h)
+        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format='JPEG', quality=80)
+    return buf.getvalue()
+
+
 # ====== Baidu OCR ======
 
 def get_baidu_access_token():
@@ -247,9 +263,10 @@ async def grade_essay(files: List[UploadFile] = File(...)):
             results.append({'original_text': f'[图片读取失败: {e}]', 'errors': [], 'annotated_image': ''})
             continue
 
-        # 1. Baidu OCR
+        # 1. Baidu OCR (compress large images first)
         try:
-            ocr_result = baidu_handwriting_ocr(contents)
+            compressed = compress_image(contents)
+            ocr_result = baidu_handwriting_ocr(compressed)
         except Exception as e:
             results.append({'original_text': f'[OCR 失败: {e}]', 'errors': [],
                             'annotated_image': base64.b64encode(contents).decode('utf-8')})
@@ -296,6 +313,117 @@ async def grade_essay(files: List[UploadFile] = File(...)):
     for error in all_errors:
         cat = error['category']
         categories[cat] = categories.get(cat, 0) + 1
+    return JSONResponse({'results': results, 'summary': {'total_errors': len(all_errors), 'categories': categories}})
+
+
+# ====== Translation Check ======
+
+def check_translation(text):
+    """Use MiMo to check Chinese-English translation pairs"""
+    if not MIMO_API_KEY:
+        return []
+    lines = text.split('\n')
+    prompt = (
+        'You are a translation checker. The following are vocabulary test answers '
+        'with English words and their Chinese translations.\n\n'
+        'Check each translation for correctness. For EACH line with an error:\n'
+        '- "line": line number (1-based)\n'
+        '- "error": the incorrect translation\n'
+        '- "correction": the correct translation\n'
+        '- "message": brief Chinese explanation\n\n'
+        'RULES:\n'
+        '- Only report actual translation errors, not minor differences\n'
+        '- Return ONLY a JSON array\n'
+        '- If no errors, return []\n\n'
+        'Lines:\n'
+    )
+    for i, line in enumerate(lines):
+        prompt += f'Line {i+1}: {line}\n'
+
+    body = json.dumps({
+        "model": MIMO_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2000, "temperature": 0.1,
+        "thinking": {"type": "disabled"},
+    }).encode("utf-8")
+    req = urllib.request.Request(f"{MIMO_BASE_URL}/chat/completions", data=body, method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {MIMO_API_KEY}"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+        content = data["choices"][0]["message"]["content"]
+        match = re.search(r'\[.*\]', content, re.DOTALL)
+        if not match:
+            return []
+        errors_raw = json.loads(match.group())
+        errors = []
+        for e in errors_raw:
+            line_num = int(e.get("line", 1))
+            error_text = e.get("error", "").strip()
+            if not error_text or line_num < 1 or line_num > len(lines):
+                continue
+            if error_text not in lines[line_num - 1]:
+                continue
+            errors.append({
+                'message': e.get("message", ""),
+                'replacements': [e.get("correction", "")],
+                'category': 'translation',
+                'rule_id': "mimo_translation",
+                'line': line_num,
+                'error_phrase': error_text,
+            })
+        return errors
+    except Exception as e:
+        print(f"[ERROR] MiMo translation check failed: {e}")
+        return []
+
+
+@app.post("/api/check-translation")
+async def check_translation_endpoint(files: List[UploadFile] = File(...)):
+    if len(files) > 2:
+        raise HTTPException(status_code=400, detail="最多只能上传2张图片")
+    results = []
+    all_errors = []
+    for file in files:
+        try:
+            contents = await file.read()
+            image = Image.open(io.BytesIO(contents))
+        except Exception as e:
+            results.append({'original_text': f'[图片读取失败: {e}]', 'errors': [], 'annotated_image': ''})
+            continue
+        try:
+            compressed = compress_image(contents)
+            ocr_result = baidu_handwriting_ocr(compressed)
+        except Exception as e:
+            results.append({'original_text': f'[OCR 失败: {e}]', 'errors': [],
+                            'annotated_image': base64.b64encode(contents).decode('utf-8')})
+            continue
+        ocr_lines = ocr_result["lines"]
+        if not ocr_lines:
+            results.append({'original_text': '', 'errors': [],
+                            'annotated_image': base64.b64encode(contents).decode('utf-8')})
+            continue
+        full_text = '\n'.join(line["text"] for line in ocr_lines)
+        try:
+            errors = check_translation(full_text)
+        except Exception as e:
+            print(f"[ERROR] Translation check: {e}")
+            errors = []
+        all_errors.extend(errors)
+        mapped_errors = map_errors_to_coords(errors, ocr_lines)
+        annotated = annotate_image(image, mapped_errors)
+        buf = io.BytesIO()
+        annotated.save(buf, format='JPEG', quality=85)
+        results.append({
+            'original_text': full_text,
+            'errors': [{'error': e.get('error_text', ''), 'message': e['message'],
+                        'replacements': e.get('replacements', []), 'category': e['category'],
+                        'line': e.get('line', 0)} for e in mapped_errors],
+            'annotated_image': base64.b64encode(buf.getvalue()).decode('utf-8'),
+        })
+    categories = {}
+    for error in all_errors:
+        categories[error['category']] = categories.get(error['category'], 0) + 1
     return JSONResponse({'results': results, 'summary': {'total_errors': len(all_errors), 'categories': categories}})
 
 
