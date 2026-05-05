@@ -1,15 +1,15 @@
 """
-英语作文批改 API 服务 (v2 - 百度手写OCR + 字符级坐标标注)
+英语作文批改 API 服务 (v3 - 百度手写OCR + MiMo语法分析 + 字符级坐标标注)
 """
 import os
 import io
+import re
 import json
 import time
 import base64
-import traceback
 import urllib.request
 import urllib.parse
-from typing import List, Optional
+from typing import List
 
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,10 +18,8 @@ from fastapi.staticfiles import StaticFiles
 
 from PIL import Image, ImageDraw, ImageFont
 
-# 初始化应用
 app = FastAPI(title="英语作文批改 API")
 
-# CORS 配置
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -30,19 +28,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 百度 OCR 配置
+# Config
 BAIDU_API_KEY = os.environ.get("BAIDU_API_KEY", "")
 BAIDU_SECRET_KEY = os.environ.get("BAIDU_SECRET_KEY", "")
 _baidu_token = {"access_token": None, "expires_at": 0}
 
-# 错误类型颜色配置
-ERROR_COLORS = {
-    'spelling': (255, 140, 0),     # 橙色
-    'grammar': (220, 40, 40),      # 红色
-    'punctuation': (0, 120, 200),  # 蓝色
-    'style': (40, 160, 60),        # 绿色
-}
+MIMO_API_KEY = os.environ.get("MIMO_API_KEY", "")
+MIMO_BASE_URL = os.environ.get("MIMO_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1")
+MIMO_MODEL = os.environ.get("MIMO_MODEL", "mimo-v2-omni")
 
+ERROR_COLORS = {
+    'spelling': (255, 140, 0),
+    'grammar': (220, 40, 40),
+    'punctuation': (0, 120, 200),
+    'style': (40, 160, 60),
+}
 CATEGORY_NAMES = {
     'spelling': '拼写',
     'grammar': '语法',
@@ -50,18 +50,15 @@ CATEGORY_NAMES = {
     'style': '表达',
 }
 
-# 静态文件目录
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
-# ====== 百度 OCR 客户端 ======
+# ====== Baidu OCR ======
 
-def get_baidu_access_token() -> str:
-    """获取百度 Access Token（缓存30天）"""
+def get_baidu_access_token():
     now = time.time()
     if _baidu_token["access_token"] and now < _baidu_token["expires_at"]:
         return _baidu_token["access_token"]
-
     url = (
         f"https://aip.baidubce.com/oauth/2.0/token"
         f"?grant_type=client_credentials"
@@ -71,20 +68,16 @@ def get_baidu_access_token() -> str:
     req = urllib.request.Request(url, method="POST")
     with urllib.request.urlopen(req, timeout=10) as resp:
         data = json.loads(resp.read())
-
     if "access_token" not in data:
-        raise Exception(f"百度 token 获取失败: {data}")
-
+        raise Exception(f"Baidu token failed: {data}")
     _baidu_token["access_token"] = data["access_token"]
     _baidu_token["expires_at"] = now + data.get("expires_in", 2592000) - 60
     return _baidu_token["access_token"]
 
 
-def baidu_handwriting_ocr(image_bytes: bytes) -> dict:
-    """调用百度手写文字识别 API"""
+def baidu_handwriting_ocr(image_bytes):
     token = get_baidu_access_token()
     img_b64 = base64.b64encode(image_bytes).decode("utf-8")
-
     url = f"https://aip.baidubce.com/rest/2.0/ocr/v1/handwriting?access_token={token}"
     body = urllib.parse.urlencode({
         "image": img_b64,
@@ -93,86 +86,95 @@ def baidu_handwriting_ocr(image_bytes: bytes) -> dict:
         "language_type": "CHN_ENG",
         "probability": "true",
     }).encode("utf-8")
-
     req = urllib.request.Request(
         url, data=body, method="POST",
         headers={"Content-Type": "application/x-www-form-urlencoded"}
     )
     with urllib.request.urlopen(req, timeout=30) as resp:
         data = json.loads(resp.read())
-
     if "error_code" in data and data["error_code"] != 0:
-        raise Exception(f"百度 OCR 错误: {data.get('error_msg', data)}")
-
+        raise Exception(f"Baidu OCR error: {data.get('error_msg', data)}")
     lines = []
     for item in data.get("words_result", []):
-        chars = []
-        for c in item.get("chars", []):
-            chars.append({"char": c["char"], "bbox": c["location"]})
-        lines.append({
-            "text": item["words"],
-            "bbox": item["location"],
-            "chars": chars,
-        })
+        chars = [{"char": c["char"], "bbox": c["location"]} for c in item.get("chars", [])]
+        lines.append({"text": item["words"], "bbox": item["location"], "chars": chars})
     return {"lines": lines}
 
 
-# ====== 语法检查 ======
+# ====== MiMo Grammar Check ======
 
-# 延迟加载 LanguageTool（可能因 Java 缺失而失败）
-_lt_tool = None
-_lt_loaded = False
+def check_grammar(text):
+    if not MIMO_API_KEY:
+        return []
 
-def _get_language_tool():
-    global _lt_tool, _lt_loaded
-    if _lt_loaded:
-        return _lt_tool
-    _lt_loaded = True
+    prompt = (
+        'Analyze this English text for grammar, spelling, and punctuation errors.\n'
+        'Return a JSON array of errors. Each error must have:\n'
+        '- "error": the wrong word/phrase (max 3 words)\n'
+        '- "correction": the corrected version\n'
+        '- "category": one of "spelling", "grammar", "punctuation", "style"\n'
+        '- "message": short Chinese explanation\n'
+        '- "offset": exact character offset in the text (0-based)\n'
+        '- "length": character length of the error\n\n'
+        'RULES:\n'
+        '- offset and length MUST be exact positions in the text below\n'
+        '- Return ONLY the JSON array, no other text\n'
+        '- If no errors, return []\n\n'
+        f'Text:\n{text}'
+    )
+
+    body = json.dumps({
+        "model": MIMO_MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 2000,
+        "temperature": 0.1,
+        "thinking": {"type": "disabled"},
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        f"{MIMO_BASE_URL}/chat/completions",
+        data=body, method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {MIMO_API_KEY}",
+        }
+    )
+
     try:
-        from language_tool_python import LanguageTool
-        _lt_tool = LanguageTool('en-US')
-        return _lt_tool
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = json.loads(resp.read())
+        content = data["choices"][0]["message"]["content"]
+
+        # Extract JSON array from response
+        json_match = re.search(r'\[.*\]', content, re.DOTALL)
+        if not json_match:
+            return []
+        errors_raw = json.loads(json_match.group())
+
+        errors = []
+        for e in errors_raw:
+            offset = int(e.get("offset", 0))
+            length = int(e.get("length", 1))
+            if offset < 0 or length <= 0 or offset + length > len(text):
+                continue
+            errors.append({
+                'message': e.get("message", ""),
+                'replacements': [e.get("correction", "")],
+                'offset': offset,
+                'length': length,
+                'context': text[max(0, offset-20):offset+length+20],
+                'category': e.get("category", "grammar"),
+                'rule_id': "mimo",
+            })
+        return errors
     except Exception as e:
-        print(f"[WARN] LanguageTool 加载失败（可能缺 Java）: {e}")
-        _lt_tool = None
-        return None
+        print(f"[ERROR] MiMo grammar check failed: {e}")
+        return []
 
 
-def categorize_error(rule_id: str, message: str) -> str:
-    rule_lower = rule_id.lower()
-    msg_lower = message.lower()
-    if 'spell' in rule_lower or 'misspell' in rule_lower:
-        return 'spelling'
-    if 'punct' in rule_lower or 'comma' in rule_lower or 'period' in rule_lower:
-        return 'punctuation'
-    if any(x in msg_lower for x in ['punctuation', 'comma', 'apostrophe']):
-        return 'punctuation'
-    if any(x in rule_lower for x in ['grammar', 'subject', 'verb', 'tense', 'agreement']):
-        return 'grammar'
-    if any(x in msg_lower for x in ['verb', 'tense', 'subject', 'agreement', 'article']):
-        return 'grammar'
-    return 'style'
+# ====== Coordinate Mapping ======
 
-
-def check_grammar(text: str) -> list:
-    tool = _get_language_tool()
-    if tool is None:
-        return []  # LanguageTool 不可用时返回空
-    matches = tool.check(text)
-    return [{
-        'message': m.message,
-        'replacements': m.replacements[:3],
-        'offset': m.offset,
-        'length': m.errorLength,
-        'context': text[max(0, m.offset-20):m.offset+m.errorLength+20],
-        'category': categorize_error(m.ruleId, m.message),
-        'rule_id': m.ruleId,
-    } for m in matches]
-
-
-# ====== 坐标映射 ======
-
-def build_char_map(ocr_lines: list) -> tuple:
+def build_char_map(ocr_lines):
     full_text = ""
     char_coords = []
     for line_idx, line in enumerate(ocr_lines):
@@ -185,7 +187,7 @@ def build_char_map(ocr_lines: list) -> tuple:
     return full_text, char_coords
 
 
-def map_errors_to_coords(errors: list, full_text: str, char_coords: list) -> list:
+def map_errors_to_coords(errors, full_text, char_coords):
     mapped = []
     for error in errors:
         offset = error["offset"]
@@ -210,9 +212,9 @@ def map_errors_to_coords(errors: list, full_text: str, char_coords: list) -> lis
     return mapped
 
 
-# ====== 图片标注 ======
+# ====== Annotation ======
 
-def annotate_image(image: Image.Image, mapped_errors: list) -> Image.Image:
+def annotate_image(image, mapped_errors):
     annotated = image.copy()
     draw = ImageDraw.Draw(annotated)
     try:
@@ -230,16 +232,15 @@ def annotate_image(image: Image.Image, mapped_errors: list) -> Image.Image:
         draw.line([(x, line_y), (x + w, line_y)], fill=color, width=3)
         correction = error.get("replacements", [""])[0] if error.get("replacements") else ""
         if correction:
-            draw.text((x, line_y + 3), f"→ {correction}", fill=color, font=small_font)
+            draw.text((x, line_y + 3), f"-> {correction}", fill=color, font=small_font)
     return annotated
 
 
-# ====== API 端点 ======
+# ====== API ======
 
 @app.get("/api/health")
 async def health_check():
-    lt_ok = _get_language_tool() is not None
-    return {"status": "ok", "version": "v2-baidu-ocr", "language_tool": lt_ok}
+    return {"status": "ok", "version": "v3-mimo-grammar", "mimo": bool(MIMO_API_KEY)}
 
 
 @app.post("/api/grade")
@@ -255,14 +256,10 @@ async def grade_essay(files: List[UploadFile] = File(...)):
             contents = await file.read()
             image = Image.open(io.BytesIO(contents))
         except Exception as e:
-            results.append({
-                'original_text': f'[图片读取失败: {e}]',
-                'errors': [],
-                'annotated_image': '',
-            })
+            results.append({'original_text': f'[图片读取失败: {e}]', 'errors': [], 'annotated_image': ''})
             continue
 
-        # 1. 百度 OCR
+        # 1. Baidu OCR
         try:
             ocr_result = baidu_handwriting_ocr(contents)
         except Exception as e:
@@ -278,21 +275,21 @@ async def grade_essay(files: List[UploadFile] = File(...)):
             results.append({'original_text': '', 'errors': [], 'annotated_image': base64.b64encode(contents).decode('utf-8')})
             continue
 
-        # 2. 构建全文
+        # 2. Build full text + char coords
         full_text, char_coords = build_char_map(ocr_lines)
         if not full_text.strip():
             results.append({'original_text': '', 'errors': [], 'annotated_image': base64.b64encode(contents).decode('utf-8')})
             continue
 
-        # 3. 语法检查（可能失败）
+        # 3. MiMo grammar check
         try:
             errors = check_grammar(full_text)
         except Exception as e:
-            print(f"[ERROR] Grammar check failed: {e}")
+            print(f"[ERROR] Grammar check: {e}")
             errors = []
         all_errors.extend(errors)
 
-        # 4. 映射坐标 + 标注
+        # 4. Map to coordinates + annotate
         mapped_errors = map_errors_to_coords(errors, full_text, char_coords)
         annotated = annotate_image(image, mapped_errors)
 
@@ -307,7 +304,6 @@ async def grade_essay(files: List[UploadFile] = File(...)):
                 'message': e['message'],
                 'replacements': e.get('replacements', []),
                 'category': e['category'],
-                'rule_id': e.get('rule_id', ''),
             } for e in mapped_errors],
             'annotated_image': annotated_base64,
         })
@@ -323,19 +319,17 @@ async def grade_essay(files: List[UploadFile] = File(...)):
     })
 
 
-# ====== 静态文件 ======
+# ====== Static Files ======
 
 @app.get("/")
 async def serve_index():
     index_path = os.path.join(STATIC_DIR, "index.html")
     if os.path.exists(index_path):
         return FileResponse(index_path)
-    return HTMLResponse("<h1>Essay Grader v2</h1><p>Frontend not found</p>")
-
+    return HTMLResponse("<h1>Essay Grader v3</h1>")
 
 if os.path.exists(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-
 
 if __name__ == "__main__":
     import uvicorn
