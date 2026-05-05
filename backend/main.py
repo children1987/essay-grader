@@ -31,8 +31,10 @@ MIMO_BASE_URL = os.environ.get("MIMO_BASE_URL", "https://token-plan-cn.xiaomimim
 MIMO_MODEL = os.environ.get("MIMO_MODEL", "mimo-v2-omni")
 
 ERROR_COLORS = {'spelling': (255, 140, 0), 'grammar': (220, 40, 40),
-                'punctuation': (0, 120, 200), 'style': (40, 160, 60)}
-CATEGORY_NAMES = {'spelling': '拼写', 'grammar': '语法', 'punctuation': '标点', 'style': '表达'}
+                'punctuation': (0, 120, 200), 'style': (40, 160, 60),
+                'translation': (220, 40, 40)}
+CATEGORY_NAMES = {'spelling': '拼写', 'grammar': '语法', 'punctuation': '标点', 'style': '表达',
+                   'translation': '翻译'}
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 
@@ -222,9 +224,24 @@ def map_errors_to_coords(errors, ocr_lines):
 def annotate_image(image, mapped_errors):
     annotated = image.copy()
     draw = ImageDraw.Draw(annotated)
+    # 优先使用中文字体
+    cn_font_paths = [
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    font_path = None
+    for p in cn_font_paths:
+        if os.path.exists(p):
+            font_path = p
+            break
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 16)
-        small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 12)
+        if font_path:
+            font = ImageFont.truetype(font_path, 16)
+            small_font = ImageFont.truetype(font_path, 12)
+        else:
+            font = ImageFont.load_default()
+            small_font = font
     except Exception:
         font = ImageFont.load_default()
         small_font = font
