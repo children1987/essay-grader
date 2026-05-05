@@ -198,21 +198,28 @@ def find_phrase_in_chars(phrase, chars):
 
 
 def map_errors_to_coords(errors, ocr_lines):
-    """Map MiMo errors to Baidu character coordinates using line number + text matching."""
+    """Map MiMo errors to Baidu character coordinates by searching all OCR lines."""
     mapped = []
     for error in errors:
-        line_num = error.get("line", 0)
         phrase = error.get("error_phrase", "")
-        if not line_num or line_num < 1 or line_num > len(ocr_lines) or not phrase:
+        if not phrase:
             continue
 
-        ocr_line = ocr_lines[line_num - 1]
-        bbox = find_phrase_in_chars(phrase, ocr_line["chars"])
+        # Search ALL OCR lines for the error phrase (not just MiMo's line number)
+        bbox = None
+        found_line = 0
+        for i, ocr_line in enumerate(ocr_lines):
+            bbox = find_phrase_in_chars(phrase, ocr_line["chars"])
+            if bbox is not None:
+                found_line = i + 1
+                break
+
         if bbox is None:
             continue
 
         mapped.append({
             **error,
+            "line": found_line,
             "error_text": phrase,
             "word_bbox": bbox,
         })
