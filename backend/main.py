@@ -107,6 +107,19 @@ def check_grammar(text):
     if not MIMO_API_KEY:
         return []
 
+    # MiMo's offsets are unreliable with \n, so send text with spaces instead
+    # and map offsets back afterwards
+    text_for_mimo = text.replace('\n', ' ')
+    nl_positions = [i for i, c in enumerate(text) if c == '\n']
+
+    def map_offset(offset, length):
+        """Map MiMo offsets (on space-replaced text) back to original text offsets"""
+        # Count how many newlines appear before this offset in original text
+        adj = sum(1 for p in nl_positions if p < offset)
+        new_offset = offset + adj
+        # Make sure we don't read past the original text
+        return min(new_offset, len(text) - 1), min(length, len(text) - new_offset)
+
     prompt = (
         'Analyze this English text for grammar, spelling, and punctuation errors.\n'
         'Return a JSON array of errors. Each error must have:\n'
@@ -120,7 +133,7 @@ def check_grammar(text):
         '- offset and length MUST be exact positions in the text below\n'
         '- Return ONLY the JSON array, no other text\n'
         '- If no errors, return []\n\n'
-        f'Text:\n{text}'
+        f'Text:\n{text_for_mimo}'
     )
 
     body = json.dumps({
@@ -153,8 +166,9 @@ def check_grammar(text):
 
         errors = []
         for e in errors_raw:
-            offset = int(e.get("offset", 0))
-            length = int(e.get("length", 1))
+            raw_offset = int(e.get("offset", 0))
+            raw_length = int(e.get("length", 1))
+            offset, length = map_offset(raw_offset, raw_length)
             if offset < 0 or length <= 0 or offset + length > len(text):
                 continue
             errors.append({
