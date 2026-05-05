@@ -104,23 +104,31 @@ def baidu_handwriting_ocr(image_bytes):
 # ====== MiMo Grammar Check ======
 
 def check_grammar(text):
-    """MiMo finds errors, we find positions by text matching (offsets from MiMo are unreliable)"""
+    """MiMo finds errors per OCR line. Each line is independent, no cross-line offset issues."""
     if not MIMO_API_KEY:
         return []
 
+    # Split text into lines (matching OCR line boundaries)
+    lines = text.split('\n')
+
     prompt = (
-        'Analyze this English text for grammar, spelling, and punctuation errors.\n'
-        'Return a JSON array of errors. Each error must have:\n'
-        '- "error": ONLY the specific wrong word/phrase (max 3 words). NOT the full sentence.\n'
-        '- "correction": the corrected version of just that word/phrase\n'
+        'You are an English writing assistant. Analyze the following lines of text '
+        'for grammar, spelling, and punctuation errors.\n\n'
+        'For EACH line, return errors with the LINE NUMBER (1-based).\n'
+        'Return a JSON array. Each error must have:\n'
+        '- "line": line number (1-based)\n'
+        '- "error": ONLY the wrong word/phrase (max 3 words). Must appear in the line.\n'
+        '- "correction": the corrected version\n'
         '- "category": one of "spelling", "grammar", "punctuation", "style"\n'
         '- "message": short Chinese explanation\n\n'
         'RULES:\n'
-        '- "error" field MUST be a short phrase (1-3 words) that actually appears in the text\n'
+        '- "error" must be a short phrase (1-3 words) that actually appears in that line\n'
         '- Return ONLY the JSON array, no other text\n'
         '- If no errors, return []\n\n'
-        f'Text:\n{text}'
+        'Lines:\n'
     )
+    for i, line in enumerate(lines):
+        prompt += f'Line {i+1}: {line}\n'
 
     body = json.dumps({
         "model": MIMO_MODEL,
@@ -149,34 +157,40 @@ def check_grammar(text):
             return []
         errors_raw = json.loads(json_match.group())
 
-        # Find error positions by text matching (MiMo offsets are unreliable)
-        text_lower = text.lower()
+        # Find positions: each error is within its line
         errors = []
         for e in errors_raw:
+            line_num = int(e.get("line", 1))
             error_phrase = e.get("error", "").strip()
-            if not error_phrase:
+            if not error_phrase or line_num < 1 or line_num > len(lines):
                 continue
 
-            # Try exact match first
-            idx = text_lower.find(error_phrase.lower())
+            line_text = lines[line_num - 1]
+            line_lower = line_text.lower()
+
+            # Find error in this line
+            idx = line_lower.find(error_phrase.lower())
             if idx < 0:
-                # Try matching first few words
+                # Try partial match
                 words = error_phrase.split()
                 for n in range(min(3, len(words)), 0, -1):
                     phrase = ' '.join(words[:n])
-                    idx = text_lower.find(phrase.lower())
+                    idx = line_lower.find(phrase.lower())
                     if idx >= 0:
                         break
             if idx < 0:
                 continue
 
-            length = len(error_phrase)
+            # Calculate global offset (sum of previous lines + newlines)
+            global_offset = sum(len(lines[i]) + 1 for i in range(line_num - 1)) + idx
+
             errors.append({
                 'message': e.get("message", ""),
                 'replacements': [e.get("correction", "")],
-                'offset': idx,
-                'length': length,
-                'context': text[max(0, idx-20):idx+length+20],
+                'offset': global_offset,
+                'length': len(error_phrase),
+                'line': line_num,
+                'context': line_text[max(0, idx-10):idx+len(error_phrase)+10],
                 'category': e.get("category", "grammar"),
                 'rule_id': "mimo",
             })
